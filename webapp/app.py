@@ -489,8 +489,8 @@ async def api_ad_detail(ad_id: int):
             "media_list": media_list,
             "custom_url": r["custom_url"],
             "channel_url": channel_url,
-            "username": r["username"],
-            "user_id": r["user_id"],
+            # REJA9: username/user_id removed from public response — seller
+            # identity only reachable via /api/contact for private-group members
             "view_count": r["view_count"] or 0,
             "public_text": public_text,
             "button_label": button_label,

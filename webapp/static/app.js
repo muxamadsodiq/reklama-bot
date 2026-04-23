@@ -394,15 +394,11 @@ function renderDetail(d) {
     .map(([k,v]) => `<div class="field-row"><span class="k">${escapeHtml(k)}</span><span class="v">${highlight(String(v), state.tokens)}</span></div>`)
     .join('');
 
-  const sellerBtn = d.user_id
-    ? `<button class="secondary-btn" data-seller="${d.user_id}">👤 E'lon beruvchi${d.username ? ' (@' + escapeHtml(d.username) + ')' : ''}</button>`
-    : '';
+  // REJA9: seller/owner info HIDDEN from public view — only visible to
+  // private-group members via /api/contact response (private_text_template)
   // REJA9: contact button (premium gating) — primary CTA
   const btnLabel = escapeHtml(d.button_label || "📞 Aloqa");
   const contactBtn = `<button class="primary-btn contact-btn" id="detailContactBtn" data-ad-id="${d.id}">${btnLabel}</button>`;
-  const ownerBtn = d.username
-    ? `<a class="secondary-btn" href="https://t.me/${escapeHtml(d.username)}" target="_blank">💬 E'lon beruvchiga yozish</a>`
-    : '';
 
   // Public post text (from admin template) — falls back to description + fields
   const publicBlock = d.public_text
@@ -428,8 +424,6 @@ function renderDetail(d) {
       <div id="contactResult" class="contact-result"></div>
       <button class="secondary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
       <button class="secondary-btn" id="detailShareBtn" data-ad-id="${d.id}">🔗 Ulashish</button>
-      ${ownerBtn}
-      ${sellerBtn}
       ${d.channel_url ? `<a class="secondary-btn" href="${escapeHtml(d.channel_url)}" target="_blank">📢 Kanalda ochish</a>` : ''}
     </div>
   `;
