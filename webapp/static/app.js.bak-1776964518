@@ -400,36 +400,23 @@ function renderDetail(d) {
   const btnLabel = escapeHtml(d.button_label || "📞 Aloqa");
   const contactBtn = `<button class="primary-btn contact-btn" id="detailContactBtn" data-ad-id="${d.id}">${btnLabel}</button>`;
 
-  // Public post matni admin template asosida (kanalga chiqqan post bilan
-  // aynan bir xil). Agar public_text bor bo'lsa — sarlavha/narx/maydonlarni
-  // qaytadan chiqarmaymiz, bo'lmasa fallback description+fields.
-  const hasPublicText = !!d.public_text;
-  const headHtml = hasPublicText
-    ? `<div class="detail-head">
-         <div class="bc muted">${bc}</div>
-         <div class="detail-meta muted">
-           <span>🕘 ${timeAgo(d.created_at)}</span>
-           <span>👁 ${d.view_count}</span>
-         </div>
-       </div>`
-    : `<div class="detail-head">
-         <div class="bc muted">${bc}</div>
-         <h2>${title}</h2>
-         <div class="detail-price">${price ? fmt(price) + " so'm" : '—'}</div>
-         ${priceAlt}
-         <div class="detail-meta muted">
-           <span>🕘 ${timeAgo(d.created_at)}</span>
-           <span>👁 ${d.view_count}</span>
-         </div>
-       </div>`;
-
-  const publicBlock = hasPublicText
+  // Public post text (from admin template) — falls back to description + fields
+  const publicBlock = d.public_text
     ? `<div class="detail-public-text">${escapeHtml(d.public_text).replace(/\n/g,'<br>')}</div>`
     : `${description ? `<div class="detail-desc">${highlight(description, state.tokens)}</div>` : ''}
        ${fields ? `<div class="detail-fields">${fields}</div>` : ''}`;
 
   els.detailContent.innerHTML = `
-    ${headHtml}
+    <div class="detail-head">
+      <div class="bc muted">${bc}</div>
+      <h2>${title}</h2>
+      <div class="detail-price">${price ? fmt(price) + " so'm" : '—'}</div>
+      ${priceAlt}
+      <div class="detail-meta muted">
+        <span>🕘 ${timeAgo(d.created_at)}</span>
+        <span>👁 ${d.view_count}</span>
+      </div>
+    </div>
     ${slides ? `<div class="slider">${slides}</div>` : ''}
     ${publicBlock}
     <div class="detail-actions">
