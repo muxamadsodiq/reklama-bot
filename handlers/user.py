@@ -174,7 +174,7 @@ async def open_owner(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await cb.answer()
 
 
-async def build_channels_kb(selected: set[int]):
+async def build_channels_kb(selected: set[int] | None = None):
     chs = await db.list_channels()
     # Admin (owner) ma'lumotlarini map qilib olamiz
     admins = await db.list_admins()
@@ -190,22 +190,21 @@ async def build_channels_kb(selected: set[int]):
             admin_map[a["user_id"]] = f"ID:{a['user_id']}"
     rows = []
     for c in chs:
-        mark = "✅" if c["id"] in selected else "☑️"
         # Admin belgilagan button_label bo'lsa — shuni ishlatamiz, yo'q bo'lsa kanal nomi
         try:
             custom_label = c["button_label"]
         except (KeyError, IndexError):
             custom_label = None
-        base = custom_label if custom_label else c["name"]
-        label = f"{mark} {base}"
-        if not custom_label:
+        if custom_label:
+            label = custom_label
+        else:
+            label = c["name"]
             owner_label = admin_map.get(c["owner_id"])
             if owner_label:
                 label += f" — {owner_label}"
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"u:tog:{c['id']}")]
         )
-    rows.append([InlineKeyboardButton(text="➡️ Davom etish", callback_data="u:go")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -227,31 +226,14 @@ async def new_ad(cb: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(UserAd.select_channels, F.data.startswith("u:tog:"))
-async def toggle_ch(cb: CallbackQuery, state: FSMContext):
+async def pick_channel(cb: CallbackQuery, state: FSMContext):
     ch_id = int(cb.data.split(":")[2])
-    data = await state.get_data()
-    sel = set(data.get("selected", []))
-    if ch_id in sel:
-        sel.remove(ch_id)
-    else:
-        sel.add(ch_id)
-    await state.update_data(selected=list(sel))
-    kb = await build_channels_kb(sel)
+    # Bitta bosish → shu kanal tanlandi va darhol flow boshlanadi
+    await state.update_data(selected=[ch_id], queue=[ch_id], current_idx=0)
     try:
-        await cb.message.edit_reply_markup(reply_markup=kb)
+        await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.answer()
-
-
-@router.callback_query(UserAd.select_channels, F.data == "u:go")
-async def go_fill(cb: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    sel = data.get("selected", [])
-    if not sel:
-        await cb.answer("Kamida bitta kanal tanlang", show_alert=True)
-        return
-    await state.update_data(queue=list(sel), current_idx=0)
     await start_channel_flow(cb.message, state)
     await cb.answer()
 

@@ -1,0 +1,103 @@
+REJA4 — Kanal Tanlash Daraxti (Routing Tree)
+==============================================
+
+MAQSAD
+------
+User "📢 Reklama berish" bossa → savollar daraxti beriladi →
+har javob keyingi savolga olib boradi → oxirida FAQAT mos
+kanallar ro'yxati chiqadi → user bittasini bosadi → reklama
+oqimi boshlanadi.
+
+Hozirgi holat:
+  u:new → barcha kanallar → u:tog:<id> → reklama oqimi
+
+Yangi holat:
+  u:new → rt:q:<qid> (1-savol) → [tanlov] → rt:q:<qid2> (2-savol) →
+         ... → rt:leaf:<node_id> → kanallar (filter) → u:tog:<id> → oqim
+
+FARQ: bu daraxt /start survey'dan BOSHQA. O'sha survey — user
+haqida ma'lumot yig'ish. Bu daraxt — reklama uchun kanalni topish.
+
+DB MODELI
+---------
+Jadval: routing_nodes
+  id          INTEGER PK
+  parent_id   INTEGER NULL  (NULL → root)
+  text        TEXT          (savol yoki tanlov tugma yozuvi)
+  is_question INTEGER       (1 = bu node savol, 0 = bu tanlov)
+  position    INTEGER       (tartib)
+  created_at  TEXT
+
+Struktura:
+  - Savol node'i (is_question=1) → children: tanlovlar (is_question=0)
+  - Tanlov node'i (is_question=0) → children: keyingi savol (is_question=1)
+                                    YOKI children yo'q = LEAF
+
+Jadval: routing_node_channels  (LEAF → kanallar link)
+  node_id     INTEGER   (tanlov node IDsi — leaf bo'lishi kerak)
+  channel_id  INTEGER
+  PRIMARY KEY (node_id, channel_id)
+
+MISOL DARAXT
+------------
+[?] "Qaysi yo'nalish?"
+ ├─ Ko'chmas mulk
+ │   └─ [?] "Shahar?"
+ │       ├─ Toshkent → kanal A, B
+ │       └─ Samarqand → kanal C
+ └─ Transport
+     └─ [?] "Yangi yoki ishlatilgan?"
+         ├─ Yangi → kanal D
+         └─ Ishlatilgan → kanal E
+
+BOSQICHLAR
+----------
+1. DB jadvallar + helperlar (database.py):
+   - routing_upsert_node, routing_delete_node (cascade)
+   - routing_get_node, routing_list_children
+   - routing_get_root_question
+   - routing_set_node_channels, routing_get_node_channels
+   - routing_is_leaf(node_id) → True agar children yo'q
+
+2. USER FLOW (handlers/user.py):
+   - u:new bossa:
+     - agar root question yo'q → hozirgi kabi barcha kanallarni ko'rsat
+     - bor → rt:q:<root_id> ni render qil
+   - rt:pick:<choice_id>: choice node ni oladi
+     - agar children bor va keyingisi savol → yana savol
+     - agar leaf → routing_get_node_channels(choice_id) → kanallarni chiqar
+   - kanal tugmasi u:tog:<id> — hozirgi kabi darhol flow
+
+3. SUPER ADMIN PANEL (handlers/super_admin.py):
+   "🌳 Kanal tanlash daraxti" tugmasi → sa:rt:home
+   - Root savolni yaratish/tahrirlash
+   - Har node uchun:
+     - Tahrirlash (text)
+     - Tanlovlar/Savollar qo'shish
+     - O'chirish (cascade)
+     - Leaf bo'lsa → kanallarni ulash
+   - Callback prefiks: sa:rt:*
+     - sa:rt:home           — ildiz ekrani
+     - sa:rt:view:<id>      — node ko'rish
+     - sa:rt:add_q:<pid>    — yangi savol qo'shish (parent=choice node)
+     - sa:rt:add_c:<pid>    — yangi tanlov qo'shish (parent=question node)
+     - sa:rt:edit:<id>      — text tahrir (FSM)
+     - sa:rt:del:<id>       — o'chirish (tasdiq)
+     - sa:rt:chs:<id>       — leaf → kanallar tanlash
+     - sa:rt:chs_tog:<nid>:<cid> — kanal toggle
+
+4. PUSH + RESTART
+
+SAQLANADI
+---------
+- Barcha u:* callbacklar (u:tog, u:go, u:new, u:owner, u:home)
+- sa:home, sa:chs:*, sa:st:* — o'zgarmaydi
+- Agar daraxt bo'sh bo'lsa — hozirgi barcha kanallar behavior ishlaydi
+
+TEST CHECKLIST
+--------------
+[ ] daraxt bo'sh → hamma kanallar ko'rinadi (regression yo'q)
+[ ] root savol + tanlovlar + leaf'lar bor → to'g'ri filter
+[ ] leaf'da kanal ulanmagan → "kanal yo'q" xabari
+[ ] super admin node o'chirsa → cascade (barcha bolalar ham)
+[ ] super admin kanal toggle qilsa — saqlanadi
