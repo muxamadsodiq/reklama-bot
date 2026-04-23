@@ -44,6 +44,11 @@ router.callback_query.filter(_admin_only_cb)
 
 
 # ---------- FSM ----------
+class AddField(StatesGroup):
+    ch_id = State()
+    label = State()
+
+
 class AddChannel(StatesGroup):
     chat_id = State()
 
@@ -182,10 +187,52 @@ async def add_chat_id(msg: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
-    await msg.answer(
-        f"✅ «{name}» qo'shildi!\n\nEndi shu kanal uchun reklama shablonini yarataylik."
+    # --- REJA8: darhol default shablon seed (murakkab flow ixtiyoriy) ---
+    default_fields = [
+        {"key": "name", "question": "Nomi", "order_idx": 0, "show_in_public": 1},
+        {"key": "price", "question": "Narxi", "order_idx": 1, "show_in_public": 1},
+        {"key": "condition", "question": "Holati (Yangi/Ishlatilgan)", "order_idx": 2, "show_in_public": 1},
+        {"key": "location", "question": "Manzil", "order_idx": 3, "show_in_public": 1},
+        {"key": "phone", "question": "Telefon", "order_idx": 4, "show_in_public": 1},
+        {"key": "description", "question": "Tavsif", "order_idx": 5, "show_in_public": 1},
+    ]
+    await db.replace_fields(ch_id, default_fields)
+
+    default_text = (
+        "📋 <b>{name}</b>\n\n"
+        "💰 Narxi: {price}\n"
+        "🆕 Holati: {condition}\n"
+        "📍 Manzil: {location}\n"
+        "📞 Telefon: {phone}\n\n"
+        "📝 {description}"
     )
-    await start_template_flow(msg, state, ch_id)
+    try:
+        await db.upsert_template(
+            channel_id=ch_id,
+            text_template=default_text,
+            button_label=None,
+            button_caption=None,
+            button_url=None,
+            button_url_by_user=False,
+            media_required=False,
+            private_chat_id=None,
+            private_text_template=None,
+        )
+    except Exception as e:
+        await msg.answer(f"⚠️ Default shablonni o'rnatishda xato: {e}")
+
+    await state.clear()
+    await msg.answer(
+        f"✅ «{name}» qo'shildi va <b>avtomatik shablon</b> o'rnatildi!\n\n"
+        "🤖 Endi foydalanuvchilar AI bilan e'lon bera oladi.\n"
+        "📋 Xohlasangiz shablonni keyin tahrirlashingiz mumkin.",
+        parse_mode="HTML",
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Shablonni ko'rish / tahrirlash", callback_data=f"own:ch:{ch_id}")],
+        [InlineKeyboardButton(text="⬅️ Mening kanallarim", callback_data="own:list")],
+    ])
+    await msg.answer("Keyingi qadam:", reply_markup=kb)
 
 
 # ---------- List ----------
@@ -254,21 +301,46 @@ async def ch_view(cb: CallbackQuery):
     tpl = await db.get_template(ch_id)
     fields = await db.list_fields(ch_id)
     tpl_info = "✅ Shablon bor" if tpl else "⚠️ Shablon yo'q"
-    fields_info = f"📝 {len(fields)} ta savol" if fields else "—"
+    fields_info = f"📝 {len(fields)} ta maydon" if fields else "— maydonlar yo'q"
+
+    # Media / button info
+    media_info = "—"
+    btn_info = "—"
+    if tpl:
+        try:
+            media_info = "✅ Ha" if tpl["media_required"] else "❌ Yo'q"
+        except (KeyError, IndexError):
+            pass
+        try:
+            if tpl["button_label"]:
+                btn_info = f"✅ «{tpl['button_label']}»"
+            else:
+                btn_info = "❌ Yo'q"
+        except (KeyError, IndexError):
+            pass
+
     kb_rows = [
-        [InlineKeyboardButton(text="📝 Shablonni yangilash", callback_data=f"own:tpl:{ch_id}")],
+        [InlineKeyboardButton(text="📋 Maydonlar ro'yxati", callback_data=f"own:fields:{ch_id}")],
+        [InlineKeyboardButton(text="📝 Shablon matnini tahrirlash", callback_data=f"own:tpl:{ch_id}")],
+        [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
         [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
+        [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")],
     ]
-    if not fields:
-        kb_rows.append([InlineKeyboardButton(text="📋 Default shablonni o'rnatish", callback_data=f"own:seed:{ch_id}")])
-    kb_rows.append([InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")])
-    kb_rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-    await cb.message.edit_text(
-        f"📍 {ch['name']}\nchat_id: {ch['chat_id']}\n{tpl_info}\n{fields_info}",
-        reply_markup=kb,
+    text = (
+        f"📍 <b>{ch['name']}</b>\n"
+        f"🆔 chat_id: <code>{ch['chat_id']}</code>\n\n"
+        f"{tpl_info}\n"
+        f"{fields_info}\n"
+        f"📷 Media: {media_info}\n"
+        f"🔘 Tugma: {btn_info}"
     )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 
@@ -289,6 +361,142 @@ async def ch_seed_template(cb: CallbackQuery):
     await db.replace_fields(ch_id, default_fields)
     await cb.answer("✅ Default shablon o'rnatildi (6 ta maydon)", show_alert=True)
     await ch_view(cb)
+
+
+# ---------- REJA8: maydonlar UI ----------
+async def _render_fields_view(cb: CallbackQuery, ch_id: int):
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    fields = await db.list_fields(ch_id)
+    if not fields:
+        body = "📋 <b>Maydonlar ro'yxati</b>\n\n😕 Hozircha maydonlar yo'q.\n\n➕ tugmasi orqali yangi maydon qo'shing yoki default shablonni o'rnating."
+    else:
+        lines = ["📋 <b>Maydonlar ro'yxati</b>\n"]
+        for i, f in enumerate(fields, 1):
+            lines.append(f"{i}. <b>{f['question']}</b>  <code>{{{f['key']}}}</code>")
+        body = "\n".join(lines)
+
+    kb_rows = []
+    for f in fields:
+        kb_rows.append([
+            InlineKeyboardButton(text=f"❌ {f['question']}", callback_data=f"own:fdel:{ch_id}:{f['id']}"),
+        ])
+    kb_rows.append([InlineKeyboardButton(text="➕ Yangi maydon qo'shish", callback_data=f"own:fadd:{ch_id}")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"own:ch:{ch_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    try:
+        await cb.message.edit_text(body, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(body, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("own:fields:"))
+async def ch_fields_view(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    await _render_fields_view(cb, ch_id)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("own:fdel:"))
+async def ch_field_delete(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    ch_id = int(parts[2])
+    field_id = int(parts[3])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    import aiosqlite
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        await conn.execute("DELETE FROM template_fields WHERE id=? AND channel_id=?", (field_id, ch_id))
+        await conn.commit()
+    await cb.answer("O'chirildi")
+    await _render_fields_view(cb, ch_id)
+
+
+def _slugify_key(label: str) -> str:
+    """Uzbek lotin / cyrill / boshqa belgilarni oddiy snake_case key'ga aylantirish."""
+    import re as _re
+    # cyrillic -> latin minimal
+    tr = {
+        "а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"j","з":"z",
+        "и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r",
+        "с":"s","т":"t","у":"u","ф":"f","х":"h","ц":"ts","ч":"ch","ш":"sh","щ":"sh",
+        "ъ":"","ы":"i","ь":"","э":"e","ю":"yu","я":"ya","қ":"q","ғ":"g","ў":"o","ҳ":"h",
+    }
+    s = (label or "").strip().lower()
+    out = []
+    for ch in s:
+        if ch in tr:
+            out.append(tr[ch])
+        else:
+            out.append(ch)
+    s = "".join(out)
+    s = _re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    if not s:
+        s = "field"
+    if s[0].isdigit():
+        s = "f_" + s
+    return s[:32]
+
+
+@router.callback_query(F.data.startswith("own:fadd:"))
+async def ch_field_add_start(cb: CallbackQuery, state: FSMContext):
+    ch_id = int(cb.data.split(":")[2])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    await state.set_state(AddField.label)
+    await state.update_data(ch_id=ch_id)
+    await cb.message.answer(
+        "➕ Yangi maydon nomini yuboring.\n"
+        "Masalan: <code>Rang</code>, <code>Yil</code>, <code>Hajmi</code>\n\n"
+        "ℹ️ Shablon matniga <code>{rang}</code> kabi avtomatik qo'shiladi.",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(AddField.label)
+async def ch_field_add_label(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = data.get("ch_id")
+    if not ch_id:
+        await state.clear()
+        return
+    label = (msg.text or "").strip()
+    if not label or len(label) > 60:
+        await msg.answer("❌ Nom bo'sh yoki juda uzun (max 60). Qaytadan:")
+        return
+    key = _slugify_key(label)
+    fields = await db.list_fields(ch_id)
+    existing_keys = {f["key"] for f in fields}
+    base = key
+    i = 2
+    while key in existing_keys:
+        key = f"{base}{i}"
+        i += 1
+    next_idx = (max([f["order_idx"] for f in fields], default=-1)) + 1
+    import aiosqlite
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        await conn.execute(
+            """INSERT INTO template_fields(channel_id, key, question, order_idx, show_in_public)
+               VALUES(?,?,?,?,?)""",
+            (ch_id, key, label, next_idx, 1),
+        )
+        await conn.commit()
+    await state.clear()
+    await msg.answer(
+        f"✅ Qo'shildi: <b>{label}</b> → <code>{{{key}}}</code>\n\n"
+        "📝 Agar shablon matnida bu placeholder yo'q bo'lsa — avtomatik e'tiborsiz qoldiriladi "
+        "(bot crash bermaydi). Kerak bo'lsa shablon matnini tahrirlang.",
+        parse_mode="HTML",
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Maydonlar ro'yxati", callback_data=f"own:fields:{ch_id}")],
+        [InlineKeyboardButton(text="⬅️ Kanal menyusi", callback_data=f"own:ch:{ch_id}")],
+    ])
+    await msg.answer("Keyingi:", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("own:del:"))
