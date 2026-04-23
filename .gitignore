@@ -38,3 +38,4 @@ exports/
 tmp/
 *.tmp
 .webapp_cache/
+*.bak-*
