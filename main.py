@@ -67,7 +67,13 @@ async def main():
 
     log.info("Bot ishga tushdi")
     try:
-        await dp.start_polling(bot)
+        # Saved search notifier fonda ishlaydi
+        from saved_search_notifier import run_notifier
+        notifier_task = asyncio.create_task(run_notifier(bot))
+        try:
+            await dp.start_polling(bot)
+        finally:
+            notifier_task.cancel()
     finally:
         await bot.session.close()
 

@@ -1033,3 +1033,49 @@ async def sa_rt_ans_del(cb: CallbackQuery):
     await db.routing_delete_subtree(ans_id)
     await cb.answer("🗑 O'chirildi")
     await _rt_render_home(cb.message)
+
+
+# ---------- Kategoriya icon sozlash (routing_nodes) ----------
+@router.message(Command("seticon"))
+async def cmd_seticon(msg: Message):
+    if not _is_super(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        # Show list of root-level routing nodes
+        import aiosqlite
+        from config import DB_PATH
+        async with aiosqlite.connect(DB_PATH) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT id, text, icon FROM routing_nodes ORDER BY id"
+            )
+            rows = await cur.fetchall()
+        if not rows:
+            await msg.answer("Daraxt bo'sh.")
+            return
+        lines = ["<b>📝 /seticon &lt;id&gt; &lt;emoji&gt;</b>\n"]
+        for r in rows[:40]:
+            ic = r["icon"] or "—"
+            txt = (r["text"] or "")[:40]
+            lines.append(f"<code>{r['id']}</code> {ic} — {txt}")
+        await msg.answer("\n".join(lines))
+        return
+    try:
+        node_id = int(parts[1])
+    except ValueError:
+        await msg.answer("ID raqam bo'lishi kerak")
+        return
+    icon = parts[2].strip()[:8]
+    import aiosqlite
+    from config import DB_PATH
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cur = await conn.execute(
+            "UPDATE routing_nodes SET icon=? WHERE id=?",
+            (icon, node_id),
+        )
+        await conn.commit()
+        if cur.rowcount == 0:
+            await msg.answer(f"❌ ID {node_id} topilmadi")
+            return
+    await msg.answer(f"✅ #{node_id} icon o'rnatildi: {icon}")

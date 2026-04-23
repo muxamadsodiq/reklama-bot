@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>E'lonlar</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="static/style.css?v=7">
+</head>
+<body>
+<div id="app">
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="search-wrap">
+      <input id="searchInput" type="search" placeholder="🔍 Nom, narx, manzil, kategoriya...">
+      <button id="searchClear" class="icon-btn hidden" aria-label="Tozalash">✕</button>
+    </div>
+    <button id="filterBtn" class="icon-btn" aria-label="Filtr">⚙️</button>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="home">🏠 Asosiy</button>
+    <button class="tab" data-tab="favs">❤️ Saqlangan</button>
+    <button class="tab" data-tab="recent">🕘 Ko'rilgan</button>
+    <button class="tab" data-tab="searches">🔔 Qidiruvlar</button>
+  </nav>
+
+  <!-- Sort bar -->
+  <div id="sortBar" class="sortbar">
+    <button class="sort-btn active" data-sort="new">🆕 Yangi</button>
+    <button class="sort-btn" data-sort="cheap">💰 Arzon</button>
+    <button class="sort-btn" data-sort="expensive">💎 Qimmat</button>
+    <button class="sort-btn" data-sort="views">🔥 Ommabop</button>
+  </div>
+
+  <!-- Chips -->
+  <div id="chips" class="chips hidden"></div>
+  <div id="searchHint" class="search-hint hidden"></div>
+
+  <!-- Trending carousel (home only) -->
+  <section id="trendingSection" class="trending hidden">
+    <h3 class="section-title">🔥 Trendda</h3>
+    <div id="trendingList" class="hscroll"></div>
+  </section>
+
+  <!-- Main content -->
+  <main id="main" class="main">
+    <!-- Home: categories grid -->
+    <section id="homeView" class="view">
+      <h3 class="section-title">Kategoriyalar</h3>
+      <div id="catGrid" class="cat-grid"></div>
+    </section>
+
+    <!-- Ads list -->
+    <section id="adsView" class="view hidden">
+      <div id="adsList" class="ads-list"></div>
+      <div id="loadMore" class="load-more hidden">Yuklanmoqda…</div>
+    </section>
+
+    <!-- Favorites -->
+    <section id="favsView" class="view hidden">
+      <h3 class="section-title">❤️ Saqlangan e'lonlar</h3>
+      <div id="favsList" class="ads-list"></div>
+      <div id="favsEmpty" class="empty hidden">Saqlangan e'lonlar yo'q. Qalb ikonasiga bosib qo'shing.</div>
+    </section>
+
+    <!-- Recently viewed -->
+    <section id="recentView" class="view hidden">
+      <h3 class="section-title">🕘 Yaqinda ko'rilgan</h3>
+      <div id="recentList" class="ads-list"></div>
+      <div id="recentEmpty" class="empty hidden">Ko'rilgan e'lonlar yo'q.</div>
+    </section>
+
+    <!-- Saved searches -->
+    <section id="searchesView" class="view hidden">
+      <h3 class="section-title">🔔 Saqlangan qidiruvlar</h3>
+      <p class="muted">Bu qidiruvlarga mos yangi e'lonlar haqida bot sizga xabar beradi.</p>
+      <button id="saveCurrentBtn" class="primary-btn hidden">➕ Joriy qidiruvni saqlash</button>
+      <div id="searchesList" class="searches-list"></div>
+      <div id="searchesEmpty" class="empty hidden">Saqlangan qidiruvlar yo'q.</div>
+    </section>
+
+    <!-- Detail -->
+    <section id="detailView" class="view hidden">
+      <button id="backBtn" class="back-btn">← Orqaga</button>
+      <div id="detailContent"></div>
+    </section>
+  </main>
+
+  <!-- Filter sheet -->
+  <div id="filterSheet" class="sheet hidden">
+    <div class="sheet-backdrop"></div>
+    <div class="sheet-content">
+      <div class="sheet-header">
+        <h3>Filtr</h3>
+        <button id="filterClose" class="icon-btn">✕</button>
+      </div>
+      <div class="sheet-body">
+        <label class="field">
+          <span>Manzil</span>
+          <select id="filterLocation">
+            <option value="">Barchasi</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Narx (so'm)</span>
+          <div class="price-row">
+            <input id="priceMin" type="number" inputmode="numeric" placeholder="dan">
+            <span>—</span>
+            <input id="priceMax" type="number" inputmode="numeric" placeholder="gacha">
+          </div>
+        </label>
+      </div>
+      <div class="sheet-footer">
+        <button id="filterReset" class="secondary-btn">Tozalash</button>
+        <button id="filterApply" class="primary-btn">Qo'llash</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="static/app.js?v=7"></script>
+</body>
+</html>

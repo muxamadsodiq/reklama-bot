@@ -183,9 +183,40 @@ async def init_db():
             ("posted_chat_id", "TEXT"),
             ("group_message_id", "INTEGER"),
             ("group_chat_id", "TEXT"),
+            ("category_id", "INTEGER"),
+            ("view_count", "INTEGER DEFAULT 0"),
         ]:
             if col not in ads_cols:
                 await db.execute(f"ALTER TABLE ads ADD COLUMN {col} {typ}")
+
+        # routing_nodes.icon migration
+        try:
+            cur = await db.execute("PRAGMA table_info(routing_nodes)")
+            rcols = [r[1] for r in await cur.fetchall()]
+            if rcols and "icon" not in rcols:
+                await db.execute("ALTER TABLE routing_nodes ADD COLUMN icon TEXT")
+        except Exception:
+            pass
+
+        # saved_searches table
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                query TEXT NOT NULL,
+                category_id INTEGER,
+                location TEXT,
+                price_min INTEGER,
+                price_max INTEGER,
+                last_notified_ad_id INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id);
+            CREATE INDEX IF NOT EXISTS idx_ads_status_id ON ads(status, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_ads_category ON ads(category_id, status);
+            """
+        )
         await db.commit()
 
 
@@ -414,12 +445,13 @@ async def create_ad(
     custom_url: str | None,
     target_channels: list[int],
     media_list: list | None = None,
+    category_id: int | None = None,
 ) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO ads(user_id, username, filled_data, media_file_id,
-               media_type, custom_url, target_channels, status, created_at, media_list)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+               media_type, custom_url, target_channels, status, created_at, media_list, category_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 user_id,
                 username,
@@ -431,6 +463,7 @@ async def create_ad(
                 "pending",
                 datetime.utcnow().isoformat(),
                 json.dumps(media_list or [], ensure_ascii=False),
+                category_id,
             ),
         )
         await db.commit()

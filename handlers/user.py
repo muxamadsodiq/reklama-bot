@@ -38,8 +38,11 @@ async def is_admin_or_super(uid: int) -> bool:
 
 
 async def main_menu_kb(user_id: int | None = None):
+    from aiogram.types import WebAppInfo
+    webapp_url = (await db.get_setting("webapp_url")) or "https://safar24.uz/botapp-test/"
     rows = [
         [InlineKeyboardButton(text="📢 Reklama berish", callback_data="u:new")],
+        [InlineKeyboardButton(text="🛍 E'lonlarni ko'rish (Mini App)", web_app=WebAppInfo(url=webapp_url))],
     ]
     if user_id is not None and await is_admin_or_super(user_id):
         rows.append([InlineKeyboardButton(text="🧩 Kanal egasi paneli", callback_data="u:owner")])
@@ -275,6 +278,8 @@ async def u_rt_answer(cb: CallbackQuery, state: FSMContext):
         await _rt_show_question(cb.message, next_q["id"])
         await cb.answer()
         return
+    # Leaf javob → kategoriya sifatida saqlash
+    await state.update_data(cur_category_id=ans_id)
     # Leaf javob → kanallar ro'yxati
     linked_ids = await db.routing_get_node_channels(ans_id)
     if not linked_ids:
@@ -543,6 +548,7 @@ async def send_to_owner(cb: CallbackQuery, state: FSMContext, bot: Bot):
         custom_url=data.get("cur_custom_url"),
         target_channels=[data["cur_ch_id"]],
         media_list=data.get("cur_media_list") or [],
+        category_id=data.get("cur_category_id"),
     )
 
     ch = await db.get_channel(data["cur_ch_id"])
@@ -726,3 +732,26 @@ async def u_done(cb: CallbackQuery, bot):
         except Exception:
             pass
         await cb.answer("✅ Yangilandi", show_alert=False)
+
+
+# ---------- Saved search delete callback ----------
+@router.callback_query(F.data.startswith("ss:del:"))
+async def ss_del_cb(cb: CallbackQuery):
+    try:
+        sid = int(cb.data.split(":", 2)[2])
+    except Exception:
+        await cb.answer("Xato", show_alert=True)
+        return
+    import aiosqlite
+    from config import DB_PATH
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "DELETE FROM saved_searches WHERE id=? AND user_id=?",
+            (sid, cb.from_user.id),
+        )
+        await conn.commit()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer("🗑 Qidiruv o'chirildi", show_alert=False)

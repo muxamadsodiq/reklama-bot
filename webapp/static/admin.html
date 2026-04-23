@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Reklamabot Admin</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f4f5f7; color: #1a1a1a; }
+  header { background: #2481cc; color: #fff; padding: 14px 20px; }
+  header h1 { margin: 0; font-size: 18px; }
+  .container { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+  .stat { background: #fff; padding: 16px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+  .stat .k { color: #8a8f9a; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .v { font-size: 26px; font-weight: 700; margin-top: 6px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+  th, td { padding: 10px 12px; text-align: left; font-size: 14px; border-bottom: 1px solid #f0f0f0; }
+  th { background: #fafbfc; font-weight: 600; color: #555; }
+  .bar { display: inline-block; height: 6px; background: #2481cc; border-radius: 3px; vertical-align: middle; }
+  .chart-row td:last-child { width: 50%; }
+  .muted { color: #8a8f9a; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><h1>📊 Reklamabot Admin</h1></header>
+<div class="container">
+  <div id="stats" class="grid"></div>
+  <h2>📅 So'nggi 14 kun (kunlik e'lonlar)</h2>
+  <table id="byDay"><thead><tr><th>Sana</th><th>Soni</th><th></th></tr></thead><tbody></tbody></table>
+  <h2>🏆 Top kategoriyalar</h2>
+  <table id="topCats"><thead><tr><th>#</th><th>Kategoriya</th><th>E'lonlar</th></tr></thead><tbody></tbody></table>
+  <h2>🔥 Eng ko'p ko'rilgan e'lonlar</h2>
+  <table id="topAds"><thead><tr><th>ID</th><th>Ko'rishlar</th><th>Preview</th></tr></thead><tbody></tbody></table>
+</div>
+<script>
+(async () => {
+  const r = await fetch('admin/api/stats').then(r => r.json());
+  const t = r.totals;
+  const labels = [
+    ['ads_total','Jami e\'lonlar'],
+    ['ads_approved','Tasdiqlangan'],
+    ['ads_pending','Kutilmoqda'],
+    ['ads_rejected','Rad etilgan'],
+    ['users_total','Foydalanuvchilar'],
+    ['views_total','Jami ko\'rishlar'],
+    ['channels','Kanallar'],
+    ['saved_searches','Saqlangan qidiruvlar'],
+  ];
+  document.getElementById('stats').innerHTML = labels.map(([k,name]) =>
+    `<div class="stat"><div class="k">${name}</div><div class="v">${t[k] ?? 0}</div></div>`
+  ).join('');
+
+  const maxDay = Math.max(1, ...r.by_day.map(d => d.c));
+  document.querySelector('#byDay tbody').innerHTML = r.by_day.map(d =>
+    `<tr class="chart-row"><td>${d.d}</td><td>${d.c}</td><td><span class="bar" style="width:${(d.c/maxDay*100)|0}%"></span></td></tr>`
+  ).join('') || '<tr><td colspan="3" class="muted">Ma\'lumot yo\'q</td></tr>';
+
+  document.querySelector('#topCats tbody').innerHTML = r.top_cats.map((c,i) =>
+    `<tr><td>${i+1}</td><td>${c.title ?? '—'}</td><td>${c.c}</td></tr>`
+  ).join('') || '<tr><td colspan="3" class="muted">Ma\'lumot yo\'q</td></tr>';
+
+  document.querySelector('#topAds tbody').innerHTML = r.top_ads.map(a =>
+    `<tr><td>#${a.id}</td><td>${a.view_count||0}</td><td class="muted">${(a.preview||'').replace(/</g,'&lt;')}</td></tr>`
+  ).join('') || '<tr><td colspan="3" class="muted">Ma\'lumot yo\'q</td></tr>';
+})();
+</script>
+</body>
+</html>
