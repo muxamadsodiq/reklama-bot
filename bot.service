@@ -1,0 +1,17 @@
+[Unit]
+Description=Reklama Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/reklama/bot
+Environment="PATH=/opt/reklama/venv/bin"
+ExecStart=/opt/reklama/venv/bin/python /opt/reklama/bot/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/reklama/bot/logs/bot.log
+StandardError=append:/opt/reklama/bot/logs/bot.log
+
+[Install]
+WantedBy=multi-user.target

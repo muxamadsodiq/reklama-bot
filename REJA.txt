@@ -1,0 +1,152 @@
+═══════════════════════════════════════════════════════════════
+  REKLAMABOT — YANGI DIZAYN VA FUNKSIYALAR REJASI
+  (Uytopdim/Kvartira Top uslubiga moslashtirilgan)
+═══════════════════════════════════════════════════════════════
+
+MAQSAD
+──────
+/start bosilganda chiroyli, ko'p satrli tabrik + 2 ustunli
+inline tugmalar. Uchta rol uchun (USER / ADMIN / SUPER ADMIN)
+alohida mukammal menyu va har bir tugma ISHLAYDI (mock yo'q).
+
+
+1) YANGI WELCOME (cmd_start) — handlers/user.py
+──────────────────────────────────────────────────────────────
+Matn (HTML):
+
+   🏠 <b>Reklamabotga xush kelibsiz, {ISM}!</b>
+
+   Bu bot orqali siz:
+   ➕ Reklama/e'lon joylashtirishingiz
+   🔍 Tasdiqlangan reklamalarni qidirishingiz
+   📋 O'z reklamalaringizni boshqarishingiz
+   📊 Statistikangizni ko'rishingiz
+   💬 Yordam olishingiz mumkin
+
+   {ADMIN_QATOR}   ← agar user admin bo'lsa: "✨ Siz kanal egasi (admin) sifatida ro'yxatdasiz."
+   {SUPER_QATOR}   ← agar super admin: "👑 Siz super admin sifatida ro'yxatdasiz."
+
+   Kerakli bo'limni tanlang 👇
+
+
+2) YANGI MAIN MENU (main_menu_kb) — 2 ustunli
+──────────────────────────────────────────────────────────────
+USER uchun:
+   [📢 Reklama berish]  [🔍 Qidirish]
+   [📋 Mening reklamalarim]  [📊 Statistika]
+   [💬 Yordam]
+
+ADMIN (oddiy admin) uchun — USER menu + qo'shimcha:
+   [🧩 Kanal egasi paneli]
+
+SUPER ADMIN uchun — USER + ADMIN menu + qo'shimcha:
+   [👑 Adminlar boshqaruvi]
+
+
+3) YANGI FUNKSIYALAR (hech biri mock emas — DB ga ulanadi)
+──────────────────────────────────────────────────────────────
+
+A) 🔍 QIDIRISH  (callback u:search)
+   • State: SearchAd.keyword
+   • User kalit so'z yozadi
+   • db.search_approved_ads(keyword, limit=10) chaqiriladi
+   • Har bir natija qisqa preview + "🔗 Ochish" tugmasi
+   • Hech narsa topilmasa: "Hech narsa topilmadi"
+   • "⬅️ Bosh menyu" tugmasi
+
+B) 📋 MENING REKLAMALARIM  (callback u:myads)
+   • db.list_user_ads(user_id, limit=15)
+   • Ro'yxat: status emoji + qisqa matn + ID
+       ⏳ #_0001 — Kutilmoqda
+       ✅ #_0002 — Tasdiqlandi
+       ❌ #_0003 — Rad etildi
+   • Har biriga inline "👁 Ko'rish" tugmasi → to'liq ma'lumot
+   • Rad etilgan bo'lsa — sabab ko'rsatiladi
+   • "⬅️ Bosh menyu"
+
+C) 📊 STATISTIKA  (callback u:stats)
+   • db.user_ad_stats(user_id)
+   • Chiroyli format:
+       📊 Sizning statistikangiz
+       ─────────────────
+       📝 Jami yuborildi:   {total}
+       ⏳ Kutilmoqda:       {pending}
+       ✅ Tasdiqlangan:     {approved}
+       ❌ Rad etilgan:      {rejected}
+   • SUPER ADMIN uchun — qo'shimcha "Umumiy statistika" tugmasi
+     (barcha userlar bo'yicha)
+
+D) 💬 YORDAM  (callback u:help)  — HOZIR BOR, chiroyliroq qilinadi
+   • Role'ga qarab matn (USER/ADMIN/SUPER)
+   • "⬅️ Bosh menyu"
+
+E) 📢 REKLAMA BERISH  (u:new)  — HOZIR BOR, tegmayman
+F) 🧩 KANAL EGASI PANELI (u:owner) — HOZIR BOR
+G) 👑 ADMINLAR BOSHQARUVI (sa:home) — HOZIR BOR
+
+
+4) ADMIN PANEL MUKAMMALLIGI — handlers/admin.py
+──────────────────────────────────────────────────────────────
+owner_menu_kb() ga qo'shiladi:
+   [📊 Kanal statistikasi]  — har bir kanal bo'yicha reklama soni
+   [📋 Kutilayotgan so'rovlar]  — pending ads ro'yxati (owner'ga)
+   [📖 Admin qo'llanma]
+
+Yangi DB funksiyalari kerak:
+   • list_owner_pending_ads(owner_id)  — owner kanallaridagi pending ads
+   • channel_stats(owner_id)  — kanal bo'yicha statistika
+   • global_stats()  — super admin uchun
+
+
+5) SUPER ADMIN PANEL MUKAMMALLIGI — handlers/super_admin.py
+──────────────────────────────────────────────────────────────
+sa_menu_kb() ga qo'shiladi:
+   [📊 Global statistika]  — umumiy bot statistikasi
+   [📢 Broadcast]  — ixtiyoriy (keyinroq)
+
+
+6) DB YANGI FUNKSIYALARI — database.py
+──────────────────────────────────────────────────────────────
+async def list_owner_pending_ads(owner_id: int) -> list
+async def channel_stats_for_owner(owner_id: int) -> list[dict]
+async def global_stats() -> dict
+
+
+7) FILE-LAR TAHRIRLANADI
+──────────────────────────────────────────────────────────────
+  • handlers/user.py      — welcome, main_menu_kb, search/myads/stats handlerlari
+  • handlers/admin.py     — owner_menu_kb ga qo'shimcha, pending list, stats
+  • handlers/super_admin.py — sa_menu_kb ga global stats
+  • database.py           — 3 ta yangi funksiya
+
+
+8) TEST QADAMLARI
+──────────────────────────────────────────────────────────────
+  [ ] python -c "import handlers.user, handlers.admin, handlers.super_admin"
+      → importda xato yo'q
+  [ ] python -m py_compile *.py handlers/*.py utils/*.py
+  [ ] systemd service qayta ishga tushiriladi: sudo systemctl restart bot
+  [ ] /start — chiroyli welcome chiqadi
+  [ ] Har bir tugma — alohida tekshiriladi
+
+
+9) MUHIM QOIDALAR (ADASHIB KETMASLIK UCHUN)
+──────────────────────────────────────────────────────────────
+  ✱ "u:new" callback — O'ZGARMAYDI (reklama berish flow ishlaydi)
+  ✱ "u:owner" — O'ZGARMAYDI
+  ✱ "sa:home" — O'ZGARMAYDI
+  ✱ FSM state'lariga tegmaymiz (UserAd, MakeTemplate, AddAdmin)
+  ✱ Faqat YANGI callback'lar: u:search, u:myads, u:stats
+  ✱ HTML parse mode — hamma yerda
+  ✱ Har bir yangi ekranda "⬅️ Bosh menyu" tugmasi bor
+
+
+10) TARTIB
+──────────────────────────────────────────────────────────────
+  1. database.py  — 3 yangi funksiya qo'shiladi
+  2. handlers/user.py — welcome, menu, search/myads/stats
+  3. handlers/admin.py — pending list, stats
+  4. handlers/super_admin.py — global stats
+  5. Syntax check + restart + live test
+
+═══════════════════════════════════════════════════════════════

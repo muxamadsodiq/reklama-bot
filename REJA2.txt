@@ -1,0 +1,150 @@
+═══════════════════════════════════════════════════════════
+REKLAMABOT — 2-BOSQICH TUZATISHLAR (REJA2)
+═══════════════════════════════════════════════════════════
+Vaqt: 22-apr-2026, seans #2
+Muallif: Hermes (Claude Opus 4.7)
+
+User shikoyatlari (Uzbek, 22-apr):
+  1) Oddiy userlarga menyu (Qidirish/Mening reklamalarim/Statistika)
+     yetarlicha ko'rinmayapti — yangi /start da chiroyli, tushunarli
+     bo'lsin. Har bir tugma BOSILGANDA ishlasin.
+  2) Oddiy user kanal ulayolmaydi, lekin admin yasagan e'lonlarga
+     reklama bera oladi → tanlash vaqtida kanal egasi @usernamesi
+     va kanal tavsifi ajratib ko'rsatilsin.
+  3) "Mening kanallarim" — user bitta guruhga admin qilindi, lekin
+     botda ko'rinmayapti. Sabab: membership._register da user botda
+     `is_admin` bo'lmasa — DB ga yozilmaydi. Alert + yo'riqnoma
+     ko'rsatilsin.
+  4) Barcha tugmalar mantiqan + amaliy ishlasin, adminlar ham
+     "mazza qilib" ishlatadigan darajada chiroyli + qulay bo'lsin.
+
+═══════════════════════════════════════════════════════════
+ANIQLANGAN HAQIQIY BUG'LAR (kritik)
+═══════════════════════════════════════════════════════════
+ [B1] handlers/user.py:623 —
+        `db.get_approved_ads(kw, limit=10)` chaqirilyapti,
+        lekin database.py'da funksiya `search_approved_ads` deyiladi.
+        → Qidirish HAMMA VAQT "⚠️ Xato" beradi. FATAL.
+        FIX: chaqiriqni to'g'rilash.
+
+ [B2] handlers/admin.py:188 own:list —
+        Kanal yo'q bo'lsa `cb.answer(show_alert=True)` chiqadi,
+        MENYU o'zi ochilmaydi. User "ko'rinmayapti" deyishi shu.
+        FIX: bo'sh holatda ham chiroyli empty-state + "➕ Kanal qo'shish"
+        tugmasi bilan sahifa ochilsin.
+
+ [B3] handlers/membership.py:70-81 —
+        User bot'da admin emas bo'lsa, kanal DB ga YOZILMAYDI,
+        faqat DM ga "⛔️ Siz admin emassiz" yoziladi. User bu xabarni
+        o'qimay qolishi mumkin. Natijada u "guruhga qo'shdim lekin
+        ko'rinmayapti" deb o'ylaydi.
+        FIX: (a) super adminlarga xabar yuborib "bu user sizdan
+        admin bo'lishni so'raydi" ko'rsatish; (b) userga aniq
+        super admin @username linki bilan javob.
+
+ [B4] handlers/user.py `u:owner` callback —
+        Oddiy user tugma ko'rmasa ham, eski xabarlarda bosishi
+        mumkin → "Bu bo'lim faqat adminlar uchun" alert chiqadi.
+        Ishlaydi, lekin tugma o'zi oddiyuserlarga ko'rinmasligi kerak —
+        ko'rinmaydi (main_menu_kb is_admin_or_super tekshiradi). OK.
+
+ [B5] handlers/user.py build_channels_kb —
+        Kanal tanlash sahifasida kanal nomi yonida EGASI haqida
+        ma'lumot YO'Q. User kimning kanaliga reklama berayotganini
+        bilmaydi.
+        FIX: "📍 Kanal nomi — egasi: @username" format.
+
+═══════════════════════════════════════════════════════════
+QO'SHIMCHA YAXSHILASHLAR (UX)
+═══════════════════════════════════════════════════════════
+ [U1] /start va u:home — oddiy user uchun "Mavjud kanallar soni:
+      N ta" + "Faol reklamalar: M ta" yozilsin (jonliroq ko'rinish).
+
+ [U2] u:new — kanal tanlov sahifasi boshida:
+      "👇 Reklama qo'ymoqchi bo'lgan kanalingizni tanlang
+      (har bir kanalning o'z shabloni va egasi bor)"
+
+ [U3] u:myads — status filterlar (Hammasi / ⏳ Kutilmoqda /
+      ✅ Tasdiqlangan / ❌ Rad etilgan) — tugmalar orqali.
+
+ [U4] own:list — har kanal yonida "X pending / Y approved" ko'rsatish.
+
+ [U5] own:pending — reklama ID bosilganda to'liq ko'rinish +
+      tasdiqlash/rad etish tugmalari (moderationdagi m:ok / m:no
+      callback'larini qayta ishlatamiz).
+
+ [U6] /menu — qo'shimcha komanda, bosh menyu ochsin (user ko'p
+      /start bosmasin).
+
+ [U7] Yordam matnlari (HELP_USER/HELP_ADMIN/HELP_SUPER) oxirida
+      "⬅️ Bosh menyu" tugmasi har doim bo'lsin.
+
+═══════════════════════════════════════════════════════════
+AMALIY BOSQICHLAR (tartib muhim!)
+═══════════════════════════════════════════════════════════
+Bosqich 1: database.py — yangi helperlar
+  • count_active_channels() -> int
+  • count_approved_ads() -> int
+  • channel_pending_count(ch_id) -> int
+  • channel_approved_count(ch_id) -> int
+  • get_channel_with_owner(ch_id) -> row (egasi username bilan)
+
+Bosqich 2: handlers/user.py
+  • [B1 FIX] get_approved_ads → search_approved_ads
+  • [B5 FIX] build_channels_kb — egasi username/nom ko'rinsin
+  • [U1] /start va u:home menyusida stat satrlari
+  • [U2] u:new boshlanish matni
+  • [U3] u:myads — filter tugmalari (u:myads:all / :pending / ...)
+  • [U6] /menu komanda qo'shish
+  • [U7] yordam matnlari oxirida bosh menyu tugmasi
+
+Bosqich 3: handlers/admin.py
+  • [B2 FIX] own:list — bo'sh holat chiroyli sahifa
+  • [U4] own:list — kanal yonida stat
+  • [U5] own:pending — reklama detali + tasdiqlash tugmalari
+  • own_menu_kb — sahifalash emojilar, tartib
+
+Bosqich 4: handlers/membership.py
+  • [B3 FIX] User bot admin emas bo'lsa, super admin(lar)ga
+    "bu user sizdan admin huquqini so'raydi" xabar + Tasdiqlash
+    tugmasi (callback: sa:grant:<user_id>:<chat_id>:<title>).
+  • User DM: super admin @username bilan aniq yo'riqnoma.
+
+Bosqich 5: handlers/super_admin.py
+  • sa:grant:<uid>:... callback qo'shish — bosilsa userga admin
+    huquqini beradi + kanalni DB ga qo'shadi.
+
+Bosqich 6: Syntax check + restart + journalctl
+  python3 -m py_compile handlers/*.py database.py
+  sudo systemctl restart reklamabot
+  sudo journalctl -u reklamabot -n 50 --no-pager
+
+═══════════════════════════════════════════════════════════
+CALLBACK REJIMI (o'zgartirilmaydigan — ESKI)
+═══════════════════════════════════════════════════════════
+ u:new, u:owner, u:home, u:help, u:tog:<id>, u:go, u:send, u:retry,
+ u:search, u:myads, u:adv:<id>, u:stats, u:gstats,
+ own:home, own:back, own:add, own:list, own:ch:<id>, own:del:<id>,
+ own:edit:<id>, own:tpl:<id>, own:stats, own:pending,
+ tpl:btn:*, tpl:url:*, tpl:media:*, tpl:priv:*,
+ sa:home, sa:gstats, m:ok:<id>, m:no:<id>
+
+═══════════════════════════════════════════════════════════
+YANGI CALLBACKLAR (shu rejada qo'shiladi)
+═══════════════════════════════════════════════════════════
+ u:myads:all | u:myads:pending | u:myads:approved | u:myads:rejected
+ own:pend:<ad_id>   — pending reklama detali
+ sa:grant:<uid>     — membership orqali so'rov tasdiqlash
+ sa:grant_deny:<uid>— rad etish
+
+═══════════════════════════════════════════════════════════
+OXIRGI TEKSHIRUV
+═══════════════════════════════════════════════════════════
+ ✓ py_compile PASS
+ ✓ systemctl status → active (running)
+ ✓ journalctl — ERROR/Exception YO'Q
+ ✓ /start → menyu chiroyli, 3 rol uchun moslashgan
+ ✓ "🔍 Qidirish" → kalit so'z → natijalar kelmoqda (B1 fixed)
+ ✓ "📋 Mening kanallarim" → bo'sh holat sahifa (B2 fixed)
+ ✓ Bot yangi guruhga admin qilinsa, user botda admin emas →
+   super admin DM ga "tasdiqlash so'rovi" keladi (B3 fixed)

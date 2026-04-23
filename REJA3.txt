@@ -1,0 +1,155 @@
+# REJA3 — Statistika / So'rovnoma (branching survey) moduli
+
+## Maqsad
+Super admin bot ichida daraxtsimon (branching) so'rovnoma qura oladi.
+User /start bosganda savollarga javob beradi. Javoblar DBga yoziladi.
+Super admin Excel faylda natijani yuklab oladi.
+User 2-marta /start bossa va allaqachon to'liq javob bergan bo'lsa — to'g'ridan to'g'ri main menyu.
+
+## Ma'lumotlar bazasi (yangi jadvallar)
+
+### survey_questions
+- id INTEGER PK
+- position INTEGER (tartib, faqat ko'rsatish uchun)
+- text TEXT
+- is_root INTEGER (1 = /start birinchi savoli; faqat bittasi 1 bo'ladi)
+- created_at TIMESTAMP
+
+### survey_options
+- id INTEGER PK
+- question_id INTEGER FK -> survey_questions.id
+- text TEXT (tugma matni)
+- next_question_id INTEGER NULL FK -> survey_questions.id
+  (NULL = shu variant tanlansa SO'ROVNOMA TUGAYDI)
+- position INTEGER
+
+### survey_answers
+- id INTEGER PK
+- user_id INTEGER (telegram user_id)
+- username TEXT NULL
+- full_name TEXT NULL
+- phone TEXT NULL  (request_contact orqali, agar olsa; aks holda NULL)
+- question_id INTEGER
+- option_id INTEGER
+- option_text TEXT  (snapshot, savol/variant o'chirilsa ham ma'lumot qolsin)
+- question_text TEXT (snapshot)
+- answered_at TIMESTAMP
+
+### survey_sessions
+- user_id INTEGER PK
+- started_at TIMESTAMP
+- completed_at TIMESTAMP NULL  (NULL emas = tugallangan)
+- current_question_id INTEGER NULL (davom etish uchun)
+
+## Flow
+
+### Super admin tarafdan
+1. Super admin asosiy menyusida yangi tugma: "📊 Statistika"
+2. Statistika menyusi:
+   - ➕ Yangi savol qo'shish
+   - 📋 Savollar ro'yxati (tahrir/o'chirish)
+   - 🌳 Daraxtni ko'rish (indented text)
+   - 📥 Excelga yuklash
+   - 🗑 Hamma javoblarni tozalash
+   - ⬅️ Orqaga
+3. ➕ Savol qo'shish:
+   - Savol matnini yozing (FSM: SurveyAdmin.q_text)
+   - Savol DBga qo'shiladi (is_root=1 faqat birinchi savol uchun avtomatik)
+   - Endi variant qo'shish menyusi ko'rsatiladi:
+     - ➕ Variant qo'shish
+     - ✅ Tugatdim
+   - Variant qo'shish:
+     - Variant matnini yozing (FSM: SurveyAdmin.opt_text, data={"question_id": X})
+     - Keyin inline keyboard:
+       [🔚 Tugatish (yakuniy javob)]
+       [➡️ Mavjud savolga ulash]
+       [🆕 Yangi savol yaratib ulash]
+     - Tugatish -> next_question_id=NULL
+     - Mavjud savolga ulash -> savollar ro'yxati, user tanlaydi -> option yoziladi
+     - Yangi savol -> avval savol matnini so'raydi, yaratadi, optionga ulaydi, keyin o'sha yangi savolga variantlar qo'shish davom etadi (stack yondoshuv)
+4. 📋 Savollar ro'yxati:
+   - Har savol yonida [✏️ Tahrir] [🗑 O'chir] [👁 Variantlar]
+   - Tahrir: matnni o'zgartirish
+   - O'chirish: faqat unga ulangan option bo'lmasa, aks holda ogohlantirish
+   - Variantlar: har bir variant yonida [✏️] [🔗 keyingi savol o'zgartirish] [🗑]
+5. 🌳 Daraxtni ko'rish:
+   - Indented text:
+     ```
+     🌱 [ROOT] Qayerdansiz?
+         • Toshkent → 🔗 Q2
+         • Samarqand → 🔗 Q3
+         • Boshqa → 🔚 END
+     Q2: Qaysi tumandansiz?
+         • Chilonzor → 🔚 END
+         • ...
+     ```
+6. 📥 Excelga yuklash:
+   - openpyxl bilan .xlsx yaratamiz
+   - Har bir unique user — 1 qator
+   - Ustunlar: user_id | username | full_name | phone | Q1 matni | Q2 matni | ... (hamma savollar ustida)
+   - Yacheykada user shu savolga qaysi variantni tanlagan bo'lsa o'sha variant matni
+   - Javob bermagan bo'lsa bo'sh
+   - Fayl nomi: `survey_results_YYYYMMDD_HHMMSS.xlsx`
+   - Super admin DM ga yuboriladi
+
+### User tarafdan (/start)
+1. /start bosilganda:
+   - Agar survey_questions bo'sh bo'lsa — oldingi xuddi shu /start logika (main menyu)
+   - Agar user survey_sessions.completed_at IS NOT NULL — asosiy menyuga o'tadi (allaqachon to'ldirgan)
+   - Aks holda: root savolni chiqaradi, variantlarni inline keyboard qilib
+2. Har variant bosilganda:
+   - survey_answers ga yoziladi (snapshotlar bilan)
+   - option.next_question_id bor bo'lsa — keyingi savol chiqadi
+   - NULL bo'lsa — rahmat xabari + sessiya completed, keyin main menyuga o'tadi
+3. User username/full_name/phone:
+   - username va full_name telegramdan olinadi (None bo'lishi mumkin)
+   - phone:  eng boshda, survey boshlanishidan oldin, [📱 Raqamni ulashish] request_contact tugmasi (optional skip)
+   - Skip qilsa phone NULL
+
+## Fayllar o'zgarishi
+
+- **database.py** — yangi init schema (3-4 jadval) + helper funksiyalar:
+  - add_survey_question, update_survey_question, delete_survey_question, get_survey_question
+  - list_survey_questions, list_survey_questions_with_options
+  - get_root_question, set_root_question
+  - add_survey_option, update_survey_option, delete_survey_option
+  - set_option_next, list_survey_options(qid)
+  - start_survey_session, complete_survey_session, get_survey_session(uid)
+  - save_survey_answer, get_user_answers(uid), clear_all_answers
+  - has_completed_survey(uid)
+  - list_answered_users_with_data (Excel uchun)
+  - get_survey_phone(uid), save_survey_phone(uid, phone)
+
+- **handlers/survey_admin.py** — YANGI fayl
+  - router (super admin gating kerak — `sa:` prefikslari)
+  - FSM: SurveyAdmin(q_text, opt_text, edit_q, edit_opt)
+  - callbacklar: `sa:stat:home`, `sa:stat:addq`, `sa:stat:list`, `sa:stat:tree`, `sa:stat:excel`, `sa:stat:clear`
+    - `sa:stat:q:<qid>`, `sa:stat:q:edit:<qid>`, `sa:stat:q:del:<qid>`
+    - `sa:stat:q:addopt:<qid>`, `sa:stat:q:opts:<qid>`
+    - `sa:stat:opt:<oid>:endlink` (tugatish)
+    - `sa:stat:opt:<oid>:pickq` (mavjud savolga ulash ro'yxat)
+    - `sa:stat:opt:<oid>:linkto:<qid>`
+    - `sa:stat:opt:<oid>:newq` (yangi savol yaratib ulash)
+    - `sa:stat:opt:<oid>:edit`, `sa:stat:opt:<oid>:del`
+
+- **handlers/survey_user.py** — YANGI fayl
+  - /start handler (oldingidan oldin yoki unga fallback)
+  - callbacklar: `sv:ans:<oid>`, `sv:phone:skip`, `sv:phone:share`
+  - Lekin /start asosan user.py da. Yaxshisi user.py ga bitta pre-check qo'shamiz: agar survey_questions mavjud va user completed emas — survey ni boshlaymiz.
+
+- **handlers/user.py** — /start handler yoki default handler'ga survey checki qo'shiladi
+- **handlers/super_admin.py** — asosiy super admin menyusiga "📊 Statistika" tugmasi qo'shiladi
+- **main.py** — survey_admin router ni include qilish
+- **requirements.txt** — openpyxl bor-yo'qligi tekshiriladi (bot.py ichida pip install ishlatmaymiz; oddiy import)
+
+## Xavflar / savollar
+
+- User savolga javob berayotganda bot qayta ishga tushsa — session yo'qoladi? YO'Q, survey_sessions.current_question_id bor, davom ettiramiz.
+- Savol o'chirilsa javob yoki option bog'langan bo'lsa — cascade NULL set qilamiz (option.next_question_id NULL bo'ladi).
+- User ikki marta bir xil savolga javob bersa? Branching tufayli bu mumkin emas (oldinga ketadi). Lekin xavfsizlik uchun (user_id, question_id) dublikatida — o'rtada reset bo'lsa yangisini yozaveramiz.
+- Excel: agar savollar juda ko'p bo'lsa (50+) — ustunlar ko'payadi, lekin sig'adi.
+
+## Test
+- Manual: super admin 1 root savol + 3 variant + bitta branch yaratadi, user javob beradi, Excel yuklanadi.
+- Ikkinchi /start — main menuga o'tadi.
+- clear_all bosilsa — qayta to'ldirishi mumkin.
