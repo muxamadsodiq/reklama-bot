@@ -806,9 +806,14 @@ async def sa_rt_ch(cb: CallbackQuery):
     channels = await db.list_channels()
     rows = []
     for ch in channels:
+        try:
+            lbl = ch["button_label"]
+        except (KeyError, IndexError):
+            lbl = None
+        display = lbl or ch["name"]
         mark = "✅" if ch["id"] in linked else "☑️"
         rows.append([InlineKeyboardButton(
-            text=f"{mark} {ch['title']}",
+            text=f"{mark} {display}"[:64],
             callback_data=f"sa:rt:chtg:{node_id}:{ch['id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"sa:rt:view:{node_id}")])
     await cb.message.edit_text(
