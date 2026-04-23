@@ -306,6 +306,8 @@ async def ch_view(cb: CallbackQuery):
     # Media / button info
     media_info = "—"
     btn_info = "—"
+    priv_info = "yo'q"
+    prem_info = "belgilanmagan"
     if tpl:
         try:
             media_info = "✅ Ha" if tpl["media_required"] else "❌ Yo'q"
@@ -313,15 +315,26 @@ async def ch_view(cb: CallbackQuery):
             pass
         try:
             if tpl["button_label"]:
-                btn_info = f"✅ «{tpl['button_label']}»"
+                btn_info = f"«{tpl['button_label']}»"
             else:
-                btn_info = "❌ Yo'q"
+                btn_info = "belgilanmagan"
+        except (KeyError, IndexError):
+            pass
+        try:
+            if tpl["private_chat_id"]:
+                priv_info = "sozlangan ✅"
+        except (KeyError, IndexError):
+            pass
+        try:
+            if tpl["premium_url"]:
+                prem_info = tpl["premium_url"]
         except (KeyError, IndexError):
             pass
 
     kb_rows = [
         [InlineKeyboardButton(text="📋 Maydonlar ro'yxati", callback_data=f"own:fields:{ch_id}")],
         [InlineKeyboardButton(text="📝 Shablon matnini tahrirlash", callback_data=f"own:tpl:{ch_id}")],
+        [InlineKeyboardButton(text="🔘 Aloqa tugmasi", callback_data=f"own:btn:{ch_id}")],
         [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
         [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
@@ -335,7 +348,9 @@ async def ch_view(cb: CallbackQuery):
         f"{tpl_info}\n"
         f"{fields_info}\n"
         f"📷 Media: {media_info}\n"
-        f"🔘 Tugma: {btn_info}"
+        f"🔘 Aloqa tugmasi: {btn_info}\n"
+        f"🔒 Maxfiy guruh: {priv_info}\n"
+        f"💎 Premium URL: {prem_info}"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -1181,3 +1196,159 @@ async def own_done_set_save(msg: Message, state: FSMContext):
     await db.field_set_done_rule(fid, 1, txt)
     await state.clear()
     await msg.answer(f"✅ Saqlandi: <code>{txt}</code>", parse_mode="HTML")
+
+
+# ============================================================================
+# REJA9: Aloqa tugmasi sozlash — button_label + private_text + premium_url
+# ============================================================================
+class BtnConfig(StatesGroup):
+    btn_label = State()
+    btn_private_text = State()
+    btn_premium_url = State()
+
+
+def _btn_skip_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data="own:btn:skip")
+    ]])
+
+
+@router.callback_query(F.data.startswith("own:btn:") & ~F.data.endswith(":skip"))
+async def own_btn_start(cb: CallbackQuery, state: FSMContext):
+    try:
+        ch_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        return
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    tpl = await db.get_template(ch_id)
+    if not tpl:
+        await cb.answer("Avval shablon yarating", show_alert=True)
+        return
+    await state.set_state(BtnConfig.btn_label)
+    await state.update_data(btn_ch_id=ch_id)
+    cur = ""
+    try:
+        cur = tpl["button_label"] or ""
+    except (KeyError, IndexError):
+        pass
+    await cb.message.answer(
+        f"🔘 <b>Aloqa tugmasi yozuvi</b>\n\n"
+        f"Tugma yozuvini yuboring (masalan: <code>📞 Aloqa</code>)\n"
+        f"Hozirgi: <code>{cur or '—'}</code>",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(BtnConfig.btn_label)
+async def own_btn_label_save(msg: Message, state: FSMContext):
+    txt = (msg.text or "").strip()
+    if not txt or len(txt) > 64:
+        await msg.answer("❌ 1-64 belgi bo'lsin")
+        return
+    await state.update_data(btn_label=txt)
+    await state.set_state(BtnConfig.btn_private_text)
+    await msg.answer(
+        "🔒 <b>Maxfiy guruhga yuboriladigan matn</b>\n\n"
+        "A'zo bo'lgan user'lar 'Aloqa' tugmasini bosganda botdan shu matn yuboriladi.\n"
+        "Placeholder: <code>{name}</code>, <code>{price}</code>, <code>{phone}</code> va h.k.\n\n"
+        "Matn yuboring yoki o'tkazib yuborish tugmasini bosing.",
+        parse_mode="HTML",
+        reply_markup=_btn_skip_kb(),
+    )
+
+
+@router.message(BtnConfig.btn_private_text)
+async def own_btn_private_save(msg: Message, state: FSMContext):
+    txt = (msg.text or "").strip()
+    if not txt:
+        await msg.answer("❌ Matn bo'sh")
+        return
+    await state.update_data(btn_private_text=txt)
+    await state.set_state(BtnConfig.btn_premium_url)
+    await msg.answer(
+        "💎 <b>Premium URL</b>\n\n"
+        "A'zo bo'lmagan user uchun ko'rsatiladigan URL (masalan: <code>https://t.me/admin</code>)\n"
+        "URL yuboring yoki o'tkazib yuboring.",
+        parse_mode="HTML",
+        reply_markup=_btn_skip_kb(),
+    )
+
+
+@router.message(BtnConfig.btn_premium_url)
+async def own_btn_premium_save(msg: Message, state: FSMContext):
+    txt = (msg.text or "").strip()
+    if not (txt.startswith("http://") or txt.startswith("https://") or txt.startswith("tg://")):
+        await msg.answer("❌ URL http(s):// yoki tg:// bilan boshlansin")
+        return
+    await state.update_data(btn_premium_url=txt)
+    await _btn_finalize(msg, state)
+
+
+@router.callback_query(F.data == "own:btn:skip")
+async def own_btn_skip(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur == BtnConfig.btn_private_text.state:
+        await state.update_data(btn_private_text="__KEEP__")
+        await state.set_state(BtnConfig.btn_premium_url)
+        await cb.message.answer(
+            "💎 Premium URL yuboring yoki o'tkazib yuboring.",
+            reply_markup=_btn_skip_kb(),
+        )
+        await cb.answer()
+        return
+    if cur == BtnConfig.btn_premium_url.state:
+        await state.update_data(btn_premium_url="__KEEP__")
+        await _btn_finalize(cb.message, state)
+        await cb.answer()
+        return
+    await state.clear()
+    await cb.message.answer("❌ Bekor qilindi")
+    await cb.answer()
+
+
+async def _btn_finalize(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = data.get("btn_ch_id")
+    new_label = data.get("btn_label")
+    new_private = data.get("btn_private_text", "__KEEP__")
+    new_premium = data.get("btn_premium_url", "__KEEP__")
+    await state.clear()
+
+    tpl = await db.get_template(ch_id)
+    if not tpl:
+        await msg.answer("❌ Shablon topilmadi")
+        return
+
+    def _get(k, default=None):
+        try:
+            return tpl[k]
+        except (KeyError, IndexError):
+            return default
+
+    final_private = _get("private_text_template") if new_private == "__KEEP__" else new_private
+    final_premium = _get("premium_url") if new_premium == "__KEEP__" else new_premium
+
+    await db.upsert_template(
+        channel_id=ch_id,
+        text_template=_get("text_template") or "",
+        button_label=new_label,
+        button_caption=_get("button_caption"),
+        button_url=_get("button_url"),
+        button_url_by_user=bool(_get("button_url_by_user")),
+        media_required=bool(_get("media_required")),
+        private_chat_id=_get("private_chat_id"),
+        private_text_template=final_private,
+        id_prefix=_get("id_prefix") or "_",
+        premium_url=final_premium,
+    )
+    priv_msg = "yangilandi" if new_private != "__KEEP__" else "o'zgarmadi"
+    await msg.answer(
+        f"✅ Saqlandi\n"
+        f"🔘 Tugma: «{new_label}»\n"
+        f"🔒 Maxfiy matn: {priv_msg}\n"
+        f"💎 Premium URL: {final_premium or '—'}",
+        parse_mode="HTML",
+    )

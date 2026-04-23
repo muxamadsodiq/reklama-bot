@@ -33,6 +33,18 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+import sys as _sys
+_PRJ = str(Path(__file__).resolve().parent.parent)
+if _PRJ not in _sys.path:
+    _sys.path.insert(0, _PRJ)
+try:
+    from utils.template_parser import safe_format
+except Exception:
+    def safe_format(text, data):
+        try:
+            return text.format(**{k: (v if v is not None else "") for k, v in (data or {}).items()})
+        except Exception:
+            return text or ""
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
@@ -444,6 +456,28 @@ async def api_ad_detail(ad_id: int):
                 channel_url = f"https://t.me/c/{cid.lstrip('-')}/{r['posted_message_id']}"
             else:
                 channel_url = f"https://t.me/{cid}/{r['posted_message_id']}"
+        # REJA9: public post text + contact button config
+        public_text = None
+        button_label = None
+        has_premium_gate = False
+        try:
+            tpl_row = None
+            if r["posted_chat_id"]:
+                tpl_row = conn.execute(
+                    """SELECT t.text_template, t.button_label, t.private_chat_id,
+                              t.private_text_template, t.premium_url
+                       FROM templates t JOIN channels c ON c.id=t.channel_id
+                       WHERE c.chat_id=? LIMIT 1""",
+                    (str(r["posted_chat_id"]),),
+                ).fetchone()
+            if tpl_row and tpl_row["text_template"]:
+                public_text = safe_format(tpl_row["text_template"], data)
+                button_label = tpl_row["button_label"] or "📞 Aloqa"
+                has_premium_gate = bool(tpl_row["private_chat_id"])
+            else:
+                button_label = "📞 Aloqa"
+        except Exception:
+            button_label = "📞 Aloqa"
         return {
             "id": r["id"],
             "data": data,
@@ -458,6 +492,9 @@ async def api_ad_detail(ad_id: int):
             "username": r["username"],
             "user_id": r["user_id"],
             "view_count": r["view_count"] or 0,
+            "public_text": public_text,
+            "button_label": button_label,
+            "has_premium_gate": has_premium_gate,
         }
     finally:
         conn.close()
@@ -538,6 +575,99 @@ async def api_rates():
         pass
     # Fallback hardcoded
     return {"usd_uzs": _RATES_CACHE["usd_uzs"] or 12500.0, "rub_uzs": _RATES_CACHE["rub_uzs"] or 135.0, "cached": False, "fallback": True}
+
+
+# REJA9: contact button — premium gating via private-group membership
+@app.post("/api/contact/{ad_id}")
+async def api_contact(ad_id: int, payload: dict):
+    init_data = (payload or {}).get("init_data") or ""
+    fallback_uid = (payload or {}).get("user_id")
+    user_id: Optional[int] = None
+    v = validate_init_data(init_data) if init_data else None
+    if v and "user" in v:
+        try:
+            user_id = int(v["user"].get("id"))
+        except Exception:
+            user_id = None
+    if not user_id and fallback_uid:
+        # MVP fallback: frontend sends Telegram.WebApp.initDataUnsafe.user.id
+        # TODO: require valid initData HMAC for stricter security
+        try:
+            user_id = int(fallback_uid)
+        except Exception:
+            user_id = None
+    if not user_id:
+        raise HTTPException(401, "user_id required")
+
+    conn = db()
+    try:
+        ad = conn.execute(
+            "SELECT id, filled_data, posted_chat_id FROM ads WHERE id=? AND status='approved'",
+            (ad_id,),
+        ).fetchone()
+        if not ad:
+            raise HTTPException(404, "ad not found")
+        tpl = None
+        if ad["posted_chat_id"]:
+            tpl = conn.execute(
+                """SELECT t.text_template, t.private_chat_id, t.private_text_template,
+                          t.premium_url
+                   FROM templates t JOIN channels c ON c.id=t.channel_id
+                   WHERE c.chat_id=? LIMIT 1""",
+                (str(ad["posted_chat_id"]),),
+            ).fetchone()
+        try:
+            filled = json.loads(ad["filled_data"] or "{}")
+        except Exception:
+            filled = {}
+    finally:
+        conn.close()
+
+    if not tpl or not tpl["private_chat_id"]:
+        # No premium gate configured → just return ok=true with no send
+        return {"ok": True, "sent": False, "message": "Aloqa sozlanmagan"}
+
+    private_chat_id = tpl["private_chat_id"]
+    premium_url = tpl["premium_url"] or ""
+    private_text_tpl = tpl["private_text_template"] or tpl["text_template"] or ""
+
+    # Check membership via Bot API (HTTP — no aiogram dep here)
+    if not BOT_TOKEN:
+        raise HTTPException(500, "bot token missing")
+    import urllib.parse, urllib.request
+    try:
+        q = urllib.parse.urlencode({"chat_id": private_chat_id, "user_id": user_id})
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember?{q}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": f"membership_check_failed: {e}", "premium_url": premium_url}
+
+    status = ""
+    if body.get("ok") and body.get("result"):
+        status = body["result"].get("status", "")
+    is_member = status in ("creator", "administrator", "member", "restricted")
+
+    if not is_member:
+        return {"ok": False, "sent": False, "premium_url": premium_url,
+                "message": "Sizda premium yo'q"}
+
+    # Send private text to user
+    text = safe_format(private_text_tpl, filled) or "—"
+    try:
+        send_q = {"chat_id": user_id, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": "true"}
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode(send_q).encode()
+        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
+            sb = json.loads(resp.read().decode("utf-8"))
+        if not sb.get("ok"):
+            return {"ok": False, "error": sb.get("description", "send_failed"),
+                    "premium_url": premium_url}
+    except Exception as e:
+        return {"ok": False, "error": f"send_failed: {e}", "premium_url": premium_url}
+
+    return {"ok": True, "sent": True, "message": "Telegram botga yuborildi"}
 
 
 @app.post("/api/ads/{ad_id}/view")

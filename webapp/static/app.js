@@ -394,11 +394,21 @@ function renderDetail(d) {
     .map(([k,v]) => `<div class="field-row"><span class="k">${escapeHtml(k)}</span><span class="v">${highlight(String(v), state.tokens)}</span></div>`)
     .join('');
 
-  // E'lon joylashgan kanal/guruh — daraxtdan tanlangan va post qilingan joy.
-  // Muloqot faqat shu kanal/guruh orqali (boglanish tugmalari yo'q).
-  const channelBtn = d.channel_url
-    ? `<a class="primary-btn channel-open" href="${escapeHtml(d.channel_url)}" target="_blank" rel="noopener">📢 Kanalda ko'rish va bog'lanish</a>`
-    : '<div class="muted" style="text-align:center;padding:8px">E\'lon kanali mavjud emas</div>';
+  const sellerBtn = d.user_id
+    ? `<button class="secondary-btn" data-seller="${d.user_id}">👤 E'lon beruvchi${d.username ? ' (@' + escapeHtml(d.username) + ')' : ''}</button>`
+    : '';
+  // REJA9: contact button (premium gating) — primary CTA
+  const btnLabel = escapeHtml(d.button_label || "📞 Aloqa");
+  const contactBtn = `<button class="primary-btn contact-btn" id="detailContactBtn" data-ad-id="${d.id}">${btnLabel}</button>`;
+  const ownerBtn = d.username
+    ? `<a class="secondary-btn" href="https://t.me/${escapeHtml(d.username)}" target="_blank">💬 E'lon beruvchiga yozish</a>`
+    : '';
+
+  // Public post text (from admin template) — falls back to description + fields
+  const publicBlock = d.public_text
+    ? `<div class="detail-public-text">${escapeHtml(d.public_text).replace(/\n/g,'<br>')}</div>`
+    : `${description ? `<div class="detail-desc">${highlight(description, state.tokens)}</div>` : ''}
+       ${fields ? `<div class="detail-fields">${fields}</div>` : ''}`;
 
   els.detailContent.innerHTML = `
     <div class="detail-head">
@@ -412,15 +422,66 @@ function renderDetail(d) {
       </div>
     </div>
     ${slides ? `<div class="slider">${slides}</div>` : ''}
-    ${description ? `<div class="detail-desc">${highlight(description, state.tokens)}</div>` : ''}
-    ${fields ? `<div class="detail-fields">${fields}</div>` : ''}
+    ${publicBlock}
     <div class="detail-actions">
-      ${channelBtn}
+      ${contactBtn}
+      <div id="contactResult" class="contact-result"></div>
       <button class="secondary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
       <button class="secondary-btn" id="detailShareBtn" data-ad-id="${d.id}">🔗 Ulashish</button>
+      ${ownerBtn}
+      ${sellerBtn}
+      ${d.channel_url ? `<a class="secondary-btn" href="${escapeHtml(d.channel_url)}" target="_blank">📢 Kanalda ochish</a>` : ''}
     </div>
   `;
   setupImgObserver();
+  // REJA9: wire up contact button
+  const cbtn = document.getElementById('detailContactBtn');
+  if (cbtn) cbtn.addEventListener('click', () => handleContact(d.id));
+}
+
+// REJA9: premium-gated contact
+async function handleContact(adId) {
+  const resultEl = document.getElementById('contactResult');
+  const btn = document.getElementById('detailContactBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Tekshirilmoqda…'; }
+  if (resultEl) resultEl.innerHTML = '';
+  try {
+    const tg = window.Telegram?.WebApp;
+    const initData = tg?.initData || '';
+    const userId = tg?.initDataUnsafe?.user?.id || null;
+    const res = await fetch(`/api/contact/${adId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({init_data: initData, user_id: userId}),
+    });
+    const data = await res.json();
+    if (data.ok && data.sent) {
+      if (btn) { btn.textContent = '✅ Telegram botga yuborildi'; btn.classList.add('ok'); }
+      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">📩 Tafsilotlar shaxsiy xabarda yuborildi. Botga o'ting.</div>`;
+    } else if (data.ok && !data.sent) {
+      if (btn) { btn.disabled = false; btn.textContent = '📞 Aloqa'; }
+      if (resultEl) resultEl.innerHTML = `<div class="contact-info">${escapeHtml(data.message || 'Aloqa hozircha sozlanmagan')}</div>`;
+    } else {
+      // Not a member or send failed → show premium CTA
+      const purl = data.premium_url || '';
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '📞 Aloqa';
+      }
+      if (resultEl) {
+        if (purl) {
+          resultEl.innerHTML = `
+            <div class="contact-warn">❌ Sizda premium yo'q. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
+            <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
+        } else {
+          resultEl.innerHTML = `<div class="contact-warn">❌ ${escapeHtml(data.message || data.error || "Sizda premium yo'q")}</div>`;
+        }
+      }
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '📞 Aloqa'; }
+    if (resultEl) resultEl.innerHTML = `<div class="contact-warn">Xatolik: ${escapeHtml(String(e))}</div>`;
+  }
 }
 
 function parsePrice(s) {
@@ -624,6 +685,12 @@ document.addEventListener('click', async (e) => {
     state.category = { id: parseInt(catBtn.dataset.catId), title: catBtn.dataset.catTitle };
     state.page = 1;
     loadAds();
+    return;
+  }
+  const sellerBtn2 = e.target.closest('[data-seller]');
+  if (sellerBtn2) {
+    e.stopPropagation();
+    loadSeller(parseInt(sellerBtn2.dataset.seller));
     return;
   }
   const favBtn = e.target.closest('[data-fav]');

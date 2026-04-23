@@ -69,6 +69,8 @@ async def init_db():
             await db.execute("ALTER TABLE templates ADD COLUMN private_text_template TEXT")
         if "id_prefix" not in tcols:
             await db.execute("ALTER TABLE templates ADD COLUMN id_prefix TEXT DEFAULT '_'")
+        if "premium_url" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN premium_url TEXT")
         # channels migration — button_label
         cur = await db.execute("PRAGMA table_info(channels)")
         chcols = [r[1] for r in await cur.fetchall()]
@@ -345,6 +347,7 @@ async def upsert_template(
     private_chat_id: str | None = None,
     private_text_template: str | None = None,
     id_prefix: str = "_",
+    premium_url: str | None = None,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -356,7 +359,7 @@ async def upsert_template(
                 """UPDATE templates SET text_template=?, button_label=?,
                    button_caption=?, button_url=?, button_url_by_user=?,
                    media_required=?, private_chat_id=?, private_text_template=?,
-                   id_prefix=?
+                   id_prefix=?, premium_url=?
                    WHERE channel_id=?""",
                 (
                     text_template,
@@ -368,6 +371,7 @@ async def upsert_template(
                     private_chat_id,
                     private_text_template,
                     id_prefix,
+                    premium_url,
                     channel_id,
                 ),
             )
@@ -375,8 +379,8 @@ async def upsert_template(
             await db.execute(
                 """INSERT INTO templates(channel_id, text_template, button_label,
                    button_caption, button_url, button_url_by_user, media_required,
-                   private_chat_id, private_text_template, id_prefix)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   private_chat_id, private_text_template, id_prefix, premium_url)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     channel_id,
                     text_template,
@@ -388,6 +392,7 @@ async def upsert_template(
                     private_chat_id,
                     private_text_template,
                     id_prefix,
+                    premium_url,
                 ),
             )
         await db.commit()
