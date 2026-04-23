@@ -1,0 +1,74 @@
+REJA6 — Super Adminlarni Dinamik Boshqarish
+=============================================
+
+MAQSAD
+------
+Hozir SUPER_ADMIN_IDS config.py ichida hardcoded.
+Bosh egasi (root super admin) DB orqali yangi super adminlarni
+qo'shishi / o'chirishi mumkin bo'lsin.
+
+Ildiz (root) super adminlar .env dan olinadi — ularni botdan
+o'chirish MUMKIN EMAS. Qo'shimcha super adminlar DB da saqlanadi.
+
+MA'LUMOTLAR MODELI
+------------------
+Jadval: super_admins
+  user_id     INTEGER PRIMARY KEY
+  username    TEXT
+  full_name   TEXT
+  added_by    INTEGER   (kim qo'shdi)
+  created_at  TEXT
+
+Helper funksiyalar (database.py):
+  - sa_list()               → barcha qo'shimcha super adminlar
+  - sa_add(user_id, ...)    → qo'shish
+  - sa_remove(user_id)      → o'chirish
+  - sa_is(user_id)          → root yoki DB da bormi?
+
+AUTH LOGIKASI
+-------------
+config.py da ROOT_SUPER_ADMIN_IDS qoladi (.env dan).
+Yangi funksiya:
+  async def is_super_admin(uid: int) -> bool:
+      if uid in ROOT_SUPER_ADMIN_IDS: return True
+      return await db.sa_is(uid)
+
+Barcha joyda `uid in SUPER_ADMIN_IDS` → `await is_super_admin(uid)`
+ga almashtirish. SUPER_ADMIN_IDS import qilingan joylar:
+  - handlers/user.py
+  - handlers/admin.py
+  - handlers/super_admin.py
+  - handlers/survey_user.py (kerak bo'lsa)
+  - handlers/membership.py, moderation.py
+
+Backward compat: SUPER_ADMIN_IDS = ROOT_SUPER_ADMIN_IDS qoldiriladi
+lekin har tekshiruv is_super_admin() orqali bo'ladi.
+
+UI — super_admin.py
+-------------------
+sa:home menyusiga qo'shiladi:
+  "👑 Super adminlar" → sa:su:home
+    - Ro'yxat (root'lar ⭐ bilan, boshqalari oddiy)
+    - "➕ Qo'shish" → sa:su:add (FSM: user ID so'raydi)
+    - Har bir (non-root) yonida "🗑" → sa:su:del:<uid>
+  
+Callbacklar:
+  - sa:su:home         — ekran
+  - sa:su:add          — yangi qo'shish (FSM)
+  - sa:su:del:<uid>    — o'chirish (tasdiq bilan)
+  - sa:su:confirm:<uid> — tasdiqlangan o'chirish
+
+CHEKLOV
+-------
+- Root super admin DB dan o'chirib bo'lmaydi (sa_remove tekshiradi)
+- O'ziga o'zi o'chira olmaydi (confirm'da tekshirish)
+- DB'ga qo'shilgan super admin /start bosgan bo'lishi kerak
+  (aks holda user_id haqida to'liq ma'lumot yo'q) — bu ogohlantirish
+
+TEST
+----
+[ ] Root super admin panelga kiradi ✅
+[ ] Yangi super admin qo'shiladi → u botga kirganda panel ko'radi
+[ ] Non-root super admin boshqa super adminni o'chira oladi
+[ ] Root'ni o'chirib bo'lmaydi (xato xabari)
+[ ] O'ziga o'zi o'chira olmaydi

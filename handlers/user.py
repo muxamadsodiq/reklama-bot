@@ -219,10 +219,96 @@ async def new_ad(cb: CallbackQuery, state: FSMContext):
         return
     await state.set_state(UserAd.select_channels)
     await state.update_data(selected=[])
+    # REJA4: agar routing tree bo'lsa — user'ga savollarni ko'rsatamiz
+    root = await db.routing_get_root_question()
+    if root:
+        await _rt_show_question(cb.message, root["id"])
+        await cb.answer()
+        return
+    # Fallback — barcha kanallar ro'yxati
     kb = await build_channels_kb(set())
     prompt_text = await db.get_setting("channel_select_prompt") or "Kanal(lar)ni tanlang:"
     await cb.message.answer(prompt_text, reply_markup=kb)
     await cb.answer()
+
+
+async def _rt_show_question(msg, qnode_id: int):
+    """User'ga savolni variant tugmalari bilan ko'rsatish."""
+    node = await db.routing_get_node(qnode_id)
+    if not node:
+        await msg.answer("⚠️ Savol topilmadi.")
+        return
+    children = await db.routing_list_children(qnode_id)
+    if not children:
+        await msg.answer("⚠️ Bu savol uchun javob variantlari yo'q.")
+        return
+    rows = []
+    for ch in children:
+        rows.append([InlineKeyboardButton(
+            text=ch["text"][:60],
+            callback_data=f"u:rt:a:{ch['id']}")])
+    await msg.answer(f"❓ <b>{node['text']}</b>",
+                     parse_mode="HTML",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(UserAd.select_channels, F.data.startswith("u:rt:a:"))
+async def u_rt_answer(cb: CallbackQuery, state: FSMContext):
+    """User javob variant tugmasini bosdi."""
+    ans_id = int(cb.data.split(":")[3])
+    ans_node = await db.routing_get_node(ans_id)
+    if not ans_node:
+        await cb.answer("Javob topilmadi", show_alert=True)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    # Agar javobning ichida keyingi savol bo'lsa — shuni ko'rsatamiz
+    children = await db.routing_list_children(ans_id)
+    next_q = None
+    for c in children:
+        if c["is_question"]:
+            next_q = c
+            break
+    if next_q:
+        await _rt_show_question(cb.message, next_q["id"])
+        await cb.answer()
+        return
+    # Leaf javob → kanallar ro'yxati
+    linked_ids = await db.routing_get_node_channels(ans_id)
+    if not linked_ids:
+        await cb.message.answer(
+            "⚠️ Bu javob uchun kanal bog'lanmagan. Admin bilan bog'laning.",
+            reply_markup=await main_menu_kb(cb.from_user.id),
+        )
+        await state.clear()
+        await cb.answer()
+        return
+    # Kanallar ro'yxati — faqat bog'langan kanallar
+    all_ch = await db.list_channels()
+    filtered = [c for c in all_ch if c["id"] in set(linked_ids)]
+    if not filtered:
+        await cb.message.answer("⚠️ Kanal topilmadi")
+        await state.clear()
+        await cb.answer()
+        return
+    rows = []
+    for c in filtered:
+        try:
+            custom_label = c["button_label"]
+        except (KeyError, IndexError):
+            custom_label = None
+        label = custom_label or c["name"]
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"u:tog:{c['id']}")])
+    prompt_text = await db.get_setting("channel_select_prompt") or "Kanal(lar)ni tanlang:"
+    await cb.message.answer(prompt_text,
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+async def _legacy_channels(cb: CallbackQuery):  # placeholder yo'q
+    pass
 
 
 @router.callback_query(UserAd.select_channels, F.data.startswith("u:tog:"))
@@ -545,3 +631,98 @@ async def send_to_owner(cb: CallbackQuery, state: FSMContext, bot: Bot):
         await state.clear()
         await cb.message.answer("Tayyor ✨", reply_markup=await main_menu_kb(cb.from_user.id))
     await cb.answer()
+
+
+# ============================================================================
+# TOPSHIRILDI — user reklamasini "bajarildi" holatiga o'tkazadi (REJA5)
+# ============================================================================
+@router.callback_query(F.data.startswith("u:dn:"))
+async def u_done(cb: CallbackQuery, bot):
+    ad_id = int(cb.data.split(":")[2])
+    ad = await db.get_ad_full(ad_id)
+    if not ad:
+        await cb.answer("Reklama topilmadi", show_alert=True)
+        return
+    if ad["user_id"] != cb.from_user.id:
+        await cb.answer("Bu reklama sizniki emas", show_alert=True)
+        return
+    try:
+        posted_chat = ad["posted_chat_id"]
+        posted_mid = ad["posted_message_id"]
+    except (KeyError, IndexError, TypeError):
+        posted_chat = posted_mid = None
+    if not posted_chat or not posted_mid:
+        await cb.answer("Post topilmadi (eski reklama bo'lishi mumkin)", show_alert=True)
+        return
+
+    import json as _json
+    filled = {}
+    try:
+        filled = _json.loads(ad["filled_data"]) if ad["filled_data"] else {}
+    except Exception:
+        filled = {}
+
+    # Har bir kanal uchun template_fields'da done_replace=1 bo'lganlarini done_text'ga almashtiramiz
+    target_channels = []
+    try:
+        target_channels = _json.loads(ad["target_channels"])
+    except Exception:
+        pass
+
+    new_filled = dict(filled)
+    any_replaced = False
+    for ch_id in target_channels:
+        fields = await db.list_fields(ch_id)
+        for f in fields:
+            try:
+                if f["done_replace"] and f["done_text"]:
+                    new_filled[f["key"]] = f["done_text"]
+                    any_replaced = True
+            except (KeyError, IndexError, TypeError):
+                continue
+        if any_replaced:
+            break  # bitta kanal uchun yetarli
+
+    if not any_replaced:
+        await cb.answer("Admin 'Topshirildi' qoidalarini sozlamagan", show_alert=True)
+        return
+
+    # Kanal postini qayta qurish va edit qilish
+    from utils.preview_builder import build_text_and_kb
+    try:
+        first_ch = target_channels[0]
+        tpl = await db.get_template(first_ch)
+        fields_meta = await db.list_fields(first_ch)
+        pub_data = {f["key"]: new_filled.get(f["key"], "") for f in fields_meta} if fields_meta else new_filled
+        new_text, new_kb = build_text_and_kb(tpl, pub_data, ad["custom_url"], ad_id=ad_id)
+    except Exception as e:
+        await cb.answer(f"Xato: {e}", show_alert=True)
+        return
+
+    edited = False
+    try:
+        if ad["media_file_id"]:
+            # caption edit
+            await bot.edit_message_caption(
+                chat_id=posted_chat, message_id=posted_mid,
+                caption=new_text, reply_markup=new_kb,
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=posted_chat, message_id=posted_mid,
+                text=new_text, reply_markup=new_kb,
+            )
+        edited = True
+    except Exception as e:
+        log.warning(f"edit post failed: {e}")
+        await cb.answer(f"❌ Post tahrirlab bo'lmadi: {e}", show_alert=True)
+        return
+
+    if edited:
+        try:
+            await cb.message.edit_text(
+                f"✅ Reklama topshirildi holatiga o'tdi. Kanal posti yangilandi.",
+            )
+        except Exception:
+            pass
+        await cb.answer("✅ Yangilandi", show_alert=False)

@@ -1,0 +1,127 @@
+REJA5 — User Reklamasini "Bajarildi" Qilish
+============================================
+
+MAQSAD
+------
+User o'z reklamasi ustida "✅ Topshirildi / O'chirish" tugmasini
+bosgan → kanaldagi post OCHMAYDI balki admin belgilagan qoida
+bo'yicha TAHRIR qilinadi. Ma'lum placeholder'lar ("maxfiy" yoki
+belgilangan maydonlar) admin bergan matnga almashadi.
+
+MISOL
+-----
+Kanal posti:
+  📍 Manzil: Yunusobod
+  💰 Narx: 500$
+  📞 Telefon: +998901234567
+
+User "Topshirildi" bossa →
+  📍 Manzil: Yunusobod
+  💰 Narx: 500$
+  📞 Telefon: ✅ Topshirildi (boshqasi tekshirmasin)
+
+Admin qaysi maydonlar almashishini va qaysi matn qo'yilishini
+oldindan sozlab qo'yadi (kanal bo'yicha yoki global).
+
+MA'LUMOTLAR MODELI
+------------------
+Har bir template (channels.template_* yoki template_fields jadvali)
+da allaqachon placeholder'lar bor. Har placeholder bo'yicha
+admin sozlab qo'yadi:
+  - "done" holatida bu maydon almashadimi? (flag)
+  - almashsa — qanday matn? (default: "✅ Topshirildi")
+
+Variant A: template_fields jadvaliga 2 ustun qo'shamiz
+  done_replace INTEGER DEFAULT 0
+  done_text    TEXT    DEFAULT NULL
+
+Variant B: yangi jadval done_rules (channel_id, field_name, replace_text)
+
+TANLOV: Variant A — oddiy, mavjud jadvalga mos.
+
+Saqlangan reklamada esa user_ads jadvalida:
+  - posted_message_id (kanaldagi xabar IDsi)    — bo'lishi kerak
+  - posted_chat_id                                — bo'lishi kerak
+  - group_message_id, group_chat_id               — maxfiy guruh uchun
+  - status: submitted / approved / posted / done  (yangi: "done")
+  - raw_fields JSON                               — user javoblari
+  - ad_id (#_0001 ko'rinish IDsi)
+
+Agar bu ustunlar yo'q bo'lsa — qo'shamiz (migration).
+
+USER FLOW
+---------
+1. User menyuda "📋 Mening reklamalarim" bor (hozir bormi — tekshir).
+   Agar yo'q bo'lsa qo'shamiz: u:myads
+2. Har reklama kartasi: holati + [✅ Topshirildi bo'ldi] tugma
+   (faqat status = posted bo'lsa ko'rinadi)
+3. Callback: u:done:<ad_id>
+   - tasdiq so'rash: "Rostdan ham bajarildi? Qaytarib bo'lmaydi."
+   - Ha bossa:
+     - raw_fields ni yuklab olamiz
+     - har maydon uchun done_replace=1 bo'lsa → done_text bilan
+       almashtiramiz (default "✅ Topshirildi")
+     - yangi matn (public + group) qayta yasaladi
+     - bot.edit_message_text/caption bilan kanaldagi postni
+       tahrir qilamiz (media bo'lsa edit_caption)
+     - maxfiy guruh postini ham tahrir qilamiz (bor bo'lsa)
+     - status → "done"
+   - Yakunda userga "✅ Yangilandi"
+
+ADMIN PANEL
+-----------
+Kanal egasi paneli (handlers/admin.py):
+  Template tahrirlash ekranida har {maydon} yonida qo'shimcha:
+    "♻️ Tugagan holat" tugma → modal:
+      - "almashadimi?" (toggle)
+      - "qanday matnga?" (FSM — matn kiritish)
+      - default: "✅ Topshirildi"
+  Callback prefiks: ad:done:*
+    - ad:done:tog:<field_id>  — toggle replace flag
+    - ad:done:edit:<field_id> — matn tahriri (FSM)
+    - ad:done:reset:<field_id> — default'ga qaytarish
+
+PLACEHOLDER LAR
+---------------
+Asl template: "Telefon: {telefon}"
+Done holatida: field_map['telefon'] → "✅ Topshirildi"
+format_map[fname] = done_text  (done_replace=1 bo'lsa)
+                 else = original_value
+
+CHEKLOVLAR
+----------
+- Telegram "edit caption" media guruh uchun faqat 1-mediaga ta'sir qiladi
+  → biz faqat asosiy message_id ni tahrir qilamiz (kifoya)
+- 48 soatlik edit cheklovi? → Yo'q, kanaldagi bot xabarlarida
+  edit muddati CHEKLOVI YO'Q (test qilish kerak)
+- Agar edit muvaffaqiyatsiz bo'lsa — userga xabar, status o'zgarmaydi
+
+BOSQICHLAR
+----------
+1. DB migration: template_fields ga done_replace + done_text
+2. DB helperlar: get_field_done_rule, set_field_done_rule
+3. user_ads jadvalida kerakli ustunlar bor/yo'qligini tekshir,
+   yo'qlarini qo'sh (message_id, chat_id, status, raw_fields)
+4. Admin panel: template tahrir ekraniga "♻️ Tugagan holat" qo'sh
+5. User panel: "📋 Mening reklamalarim" da ✅ Topshirildi tugma
+6. Edit logikasi: preview_builder'dan fragment olib qayta yasash
+7. Test: jonli reklama yaratib → done → kanalda post yangilanadimi
+8. Commit + push
+
+TEST CHECKLIST
+--------------
+[ ] admin bitta maydonda done_replace=on, done_text="Bor"
+[ ] user reklama joylaydi, approved → kanalda ko'rinadi
+[ ] user "Topshirildi" bossa → post tahrirlanadi, faqat o'sha
+    maydon "Bor" ga almashadi
+[ ] boshqa maydonlar asl holicha qoldi
+[ ] status="done" bo'lgan reklamada "Topshirildi" tugmasi
+    endi ko'rinmaydi
+[ ] maxfiy guruh posti ham yangilanadi
+[ ] media bor bo'lsa caption tahrirlanadi
+
+QO'SHIMCHA FIKR
+---------------
+Ikkinchi bosqichda: admin reklamalar ro'yxatida (sa:ads:*)
+ham "majburan done qilish" tugmasi bo'lsin — agar user yo'qolib
+qolsa, admin o'zi tugatib qo'ya oladi.

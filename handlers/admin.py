@@ -258,6 +258,7 @@ async def ch_view(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Shablonni yangilash", callback_data=f"own:tpl:{ch_id}")],
+            [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
             [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
             [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")],
@@ -866,3 +867,89 @@ async def own_pending(cb: CallbackQuery, state: FSMContext):
     ])
     await cb.message.edit_text("\n\n".join(lines), reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+# ============================================================================
+# TOPSHIRILDI QOIDALARI — admin kanal uchun maydonlarga done_text sozlaydi
+# ============================================================================
+class DoneCfg(StatesGroup):
+    wait_text = State()
+
+
+@router.callback_query(F.data.startswith("own:done:"))
+async def own_done_fields(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    fields = await db.list_fields(ch_id)
+    if not fields:
+        await cb.answer("Avval shablon va maydonlarni qo'shing", show_alert=True)
+        return
+    rows = []
+    for f in fields:
+        try:
+            rep = f["done_replace"]
+            dt = f["done_text"]
+        except (KeyError, IndexError, TypeError):
+            rep = 0; dt = None
+        state_txt = "✅" if rep else "⚪️"
+        preview = (dt[:20] if dt else "—")
+        rows.append([InlineKeyboardButton(
+            text=f"{state_txt} {f['key']} → {preview}",
+            callback_data=f"own:doneset:{f['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"own:ch:{ch_id}")])
+    await cb.message.edit_text(
+        "♻️ <b>Topshirildi qoidalari</b>\n\n"
+        "Har bir maydon uchun tugma bosib, user 'Topshirildi' bossa shu maydon qaysi matnga "
+        "almashishini belgilang. Yoqilgan maydonlar ✅ bilan ko'rinadi.\n\n"
+        "Masalan: <code>telefon</code> maydoni → <code>✅ Topshirildi</code> matniga almashsin.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("own:doneset:"))
+async def own_done_set(cb: CallbackQuery, state: FSMContext):
+    fid = int(cb.data.split(":")[2])
+    f = await db.get_field(fid)
+    if not f:
+        await cb.answer("Topilmadi", show_alert=True)
+        return
+    ch = await db.get_channel(f["channel_id"])
+    if not await _ensure_owner(cb, ch):
+        return
+    try:
+        rep = f["done_replace"]
+    except (KeyError, IndexError, TypeError):
+        rep = 0
+    # Tezkor toggle: agar yoqilgan bo'lsa — o'chiramiz; agar yo'q bo'lsa matn so'raymiz
+    if rep:
+        await db.field_set_done_rule(fid, 0, None)
+        await cb.answer("⚪️ O'chirildi")
+        cb.data = f"own:done:{f['channel_id']}"
+        await own_done_fields(cb)
+        return
+    await state.set_state(DoneCfg.wait_text)
+    await state.update_data(done_fid=fid, done_ch_id=f["channel_id"])
+    await cb.message.answer(
+        f"<b>{f['key']}</b> maydoni uchun 'Topshirildi' holatidagi matnni yuboring.\n"
+        f"Masalan: <code>✅ Topshirildi</code>",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(DoneCfg.wait_text)
+async def own_done_set_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    fid = data.get("done_fid")
+    ch_id = data.get("done_ch_id")
+    txt = (msg.text or "").strip()
+    if not txt or len(txt) > 200:
+        await msg.answer("❌ 1-200 belgi bo'lsin")
+        return
+    await db.field_set_done_rule(fid, 1, txt)
+    await state.clear()
+    await msg.answer(f"✅ Saqlandi: <code>{txt}</code>", parse_mode="HTML")

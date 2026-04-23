@@ -33,6 +33,15 @@ async def main():
 
     await db.init_db()
 
+    # DB'dan qo'shimcha super adminlarni yuklab SUPER_ADMIN_IDS set ga qo'shamiz
+    from config import SUPER_ADMIN_IDS
+    try:
+        for uid in await db.sa_db_ids():
+            SUPER_ADMIN_IDS.add(uid)
+        log.info(f"Super adminlar yuklandi: {sorted(SUPER_ADMIN_IDS)}")
+    except Exception as e:
+        log.warning(f"sa_db_ids yuklashda xato: {e}")
+
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),

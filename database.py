@@ -140,8 +140,52 @@ async def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS super_admins (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                added_by INTEGER,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS routing_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER,
+                text TEXT NOT NULL,
+                is_question INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(parent_id) REFERENCES routing_nodes(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS routing_node_channels (
+                node_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (node_id, channel_id),
+                FOREIGN KEY(node_id) REFERENCES routing_nodes(id) ON DELETE CASCADE,
+                FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+            );
             """
         )
+        # Migration: template_fields — done_replace, done_text
+        cur = await db.execute("PRAGMA table_info(template_fields)")
+        tf_cols = [r[1] for r in await cur.fetchall()]
+        if "done_replace" not in tf_cols:
+            await db.execute("ALTER TABLE template_fields ADD COLUMN done_replace INTEGER NOT NULL DEFAULT 0")
+        if "done_text" not in tf_cols:
+            await db.execute("ALTER TABLE template_fields ADD COLUMN done_text TEXT")
+        # Migration: ads — posted_message_id, posted_chat_id, group_message_id, group_chat_id
+        cur = await db.execute("PRAGMA table_info(ads)")
+        ads_cols = [r[1] for r in await cur.fetchall()]
+        for col, typ in [
+            ("posted_message_id", "INTEGER"),
+            ("posted_chat_id", "TEXT"),
+            ("group_message_id", "INTEGER"),
+            ("group_chat_id", "TEXT"),
+        ]:
+            if col not in ads_cols:
+                await db.execute(f"ALTER TABLE ads ADD COLUMN {col} {typ}")
         await db.commit()
 
 
@@ -911,5 +955,218 @@ async def set_channel_button_label(channel_id: int, label: str | None) -> None:
         await db.execute(
             "UPDATE channels SET button_label=? WHERE id=?",
             (label, channel_id),
+        )
+        await db.commit()
+
+
+# ---------- super_admins (dinamik) ----------
+async def sa_list():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM super_admins ORDER BY created_at ASC")
+        return await cur.fetchall()
+
+
+async def sa_add(user_id: int, username: str | None, full_name: str | None, added_by: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO super_admins(user_id, username, full_name, added_by, created_at) VALUES(?,?,?,?,?)",
+            (user_id, username, full_name, added_by, datetime.utcnow().isoformat()),
+        )
+        await db.commit()
+
+
+async def sa_remove(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM super_admins WHERE user_id=?", (user_id,))
+        await db.commit()
+
+
+async def sa_db_ids() -> list[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id FROM super_admins")
+        return [r[0] for r in await cur.fetchall()]
+
+
+# ---------- routing tree (kanal tanlash daraxti) ----------
+async def routing_get_root_question():
+    """Root savol — parent_id IS NULL va is_question=1 bo'lgan node."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM routing_nodes WHERE parent_id IS NULL AND is_question=1 ORDER BY id ASC LIMIT 1"
+        )
+        return await cur.fetchone()
+
+
+async def routing_create_node(parent_id: int | None, text: str, is_question: int, position: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO routing_nodes(parent_id, text, is_question, position, created_at) VALUES(?,?,?,?,?)",
+            (parent_id, text, is_question, position, datetime.utcnow().isoformat()),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def routing_update_text(node_id: int, text: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE routing_nodes SET text=? WHERE id=?", (text, node_id))
+        await db.commit()
+
+
+async def routing_delete_node(node_id: int):
+    """Cascade: FK ON DELETE CASCADE bor, lekin PRAGMA foreign_keys=ON kerak."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA foreign_keys=ON")
+        await db.execute("DELETE FROM routing_nodes WHERE id=?", (node_id,))
+        await db.commit()
+
+
+async def routing_get_node(node_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM routing_nodes WHERE id=?", (node_id,))
+        return await cur.fetchone()
+
+
+async def routing_list_children(parent_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM routing_nodes WHERE parent_id=? ORDER BY position ASC, id ASC",
+            (parent_id,),
+        )
+        return await cur.fetchall()
+
+
+async def routing_is_leaf(node_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM routing_nodes WHERE parent_id=?", (node_id,))
+        row = await cur.fetchone()
+        return (row[0] or 0) == 0
+
+
+async def routing_set_node_channels(node_id: int, channel_ids: list[int]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM routing_node_channels WHERE node_id=?", (node_id,))
+        for cid in channel_ids:
+            await db.execute(
+                "INSERT OR IGNORE INTO routing_node_channels(node_id, channel_id) VALUES(?,?)",
+                (node_id, cid),
+            )
+        await db.commit()
+
+
+async def routing_get_node_channels(node_id: int) -> list[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT channel_id FROM routing_node_channels WHERE node_id=?", (node_id,)
+        )
+        return [r[0] for r in await cur.fetchall()]
+
+
+async def routing_toggle_channel(node_id: int, channel_id: int) -> bool:
+    """Return True if now linked, False if removed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM routing_node_channels WHERE node_id=? AND channel_id=?",
+            (node_id, channel_id),
+        )
+        exists = await cur.fetchone()
+        if exists:
+            await db.execute(
+                "DELETE FROM routing_node_channels WHERE node_id=? AND channel_id=?",
+                (node_id, channel_id),
+            )
+            await db.commit()
+            return False
+        await db.execute(
+            "INSERT INTO routing_node_channels(node_id, channel_id) VALUES(?,?)",
+            (node_id, channel_id),
+        )
+        await db.commit()
+        return True
+
+
+# ---------- template_fields: done rules ----------
+async def field_set_done_rule(field_id: int, replace: int, text: str | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE template_fields SET done_replace=?, done_text=? WHERE id=?",
+            (replace, text, field_id),
+        )
+        await db.commit()
+
+
+async def field_toggle_done(field_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT done_replace FROM template_fields WHERE id=?", (field_id,))
+        row = await cur.fetchone()
+        cur_val = (row[0] if row else 0) or 0
+        new_val = 0 if cur_val else 1
+        await db.execute("UPDATE template_fields SET done_replace=? WHERE id=?", (new_val, field_id))
+        await db.commit()
+        return new_val
+
+
+async def get_field(field_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM template_fields WHERE id=?", (field_id,))
+        return await cur.fetchone()
+
+
+# ---------- ads: posted refs + status ----------
+async def set_ad_posted_refs(ad_id: int, posted_chat_id: str | None, posted_message_id: int | None,
+                              group_chat_id: str | None = None, group_message_id: int | None = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ads SET posted_chat_id=?, posted_message_id=?, group_chat_id=?, group_message_id=? WHERE id=?",
+            (posted_chat_id, posted_message_id, group_chat_id, group_message_id, ad_id),
+        )
+        await db.commit()
+
+
+async def get_ad_full(ad_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM ads WHERE id=?", (ad_id,))
+        return await cur.fetchone()
+
+
+# ---------- alias/missing helpers ----------
+async def routing_update_node(node_id: int, text: str):
+    await routing_update_text(node_id, text)
+
+
+async def routing_delete_subtree(node_id: int):
+    # routing_nodes ON DELETE CASCADE bo'lgani uchun bitta delete yetarli
+    await routing_delete_node(node_id)
+
+
+async def routing_link_channel(node_id: int, channel_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO routing_node_channels (node_id, channel_id) VALUES (?, ?)",
+            (node_id, channel_id),
+        )
+        await db.commit()
+
+
+async def routing_unlink_channel(node_id: int, channel_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM routing_node_channels WHERE node_id=? AND channel_id=?",
+            (node_id, channel_id),
+        )
+        await db.commit()
+
+
+async def update_ad_posted(ad_id: int, posted_chat_id: int | None, posted_message_id: int | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ads SET posted_chat_id=?, posted_message_id=? WHERE id=?",
+            (posted_chat_id, posted_message_id, ad_id),
         )
         await db.commit()

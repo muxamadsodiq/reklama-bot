@@ -3,7 +3,7 @@ import logging
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 import database as db
 from utils.preview_builder import build_text_and_kb, format_ad_id
@@ -83,6 +83,7 @@ async def approve(cb: CallbackQuery, bot: Bot):
         else:
             pub_data = dict(filled)
         pub_text, pub_kb = build_text_and_kb(tpl, pub_data, ad["custom_url"], ad_id=ad_id)
+        sent_msg = None
         try:
             media_list = []
             try:
@@ -100,18 +101,31 @@ async def approve(cb: CallbackQuery, bot: Bot):
                         group.append(InputMediaPhoto(media=m["file_id"], caption=cap))
                     else:
                         group.append(InputMediaVideo(media=m["file_id"], caption=cap))
-                await bot.send_media_group(ch["chat_id"], group)
+                sent_group = await bot.send_media_group(ch["chat_id"], group)
+                if sent_group:
+                    sent_msg = sent_group[0]
                 if pub_kb:
                     await bot.send_message(ch["chat_id"], "👆", reply_markup=pub_kb)
             elif ad["media_file_id"] and ad["media_type"] == "photo":
-                await bot.send_photo(ch["chat_id"], ad["media_file_id"], caption=pub_text, reply_markup=pub_kb)
+                sent_msg = await bot.send_photo(ch["chat_id"], ad["media_file_id"], caption=pub_text, reply_markup=pub_kb)
             elif ad["media_file_id"] and ad["media_type"] == "video":
-                await bot.send_video(ch["chat_id"], ad["media_file_id"], caption=pub_text, reply_markup=pub_kb)
+                sent_msg = await bot.send_video(ch["chat_id"], ad["media_file_id"], caption=pub_text, reply_markup=pub_kb)
             else:
-                await bot.send_message(ch["chat_id"], pub_text, reply_markup=pub_kb)
+                sent_msg = await bot.send_message(ch["chat_id"], pub_text, reply_markup=pub_kb)
         except Exception as e:
             errors.append(f"{ch['name']}: {e}")
             log.exception("send to channel failed")
+
+        # Birinchi muvaffaqiyatli post ref'ini saqlab qo'yamiz (user keyinroq "Topshirildi" bossa tahrirlash uchun)
+        if sent_msg is not None:
+            try:
+                await db.set_ad_posted_refs(
+                    ad_id=ad_id,
+                    posted_chat_id=str(ch["chat_id"]),
+                    posted_message_id=sent_msg.message_id,
+                )
+            except Exception as e:
+                log.warning(f"set_ad_posted_refs failed: {e}")
 
         # PRIVATE — maxfiy guruh, to'liq data
         try:
@@ -166,16 +180,24 @@ async def approve(cb: CallbackQuery, bot: Bot):
     except (KeyError, IndexError, TypeError):
         user_prefix = "_"
 
+    # User'ga "Topshirildi" tugmali xabar — shunda user reklama bajarilganda bosib kanal postini yangilaydi
+    done_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Topshirildi bo'ldi", callback_data=f"u:dn:{ad_id}")],
+    ])
     try:
         if errors:
             await bot.send_message(
                 ad["user_id"],
                 f"⚠️ Reklamangiz {format_ad_id(ad_id, user_prefix)} qisman jo'natildi:\n" + "\n".join(errors),
+                reply_markup=done_kb,
             )
         else:
             await bot.send_message(
                 ad["user_id"],
-                f"✅ Reklamangiz {format_ad_id(ad_id, user_prefix)} jo'natildi!",
+                f"✅ Reklamangiz {format_ad_id(ad_id, user_prefix)} jo'natildi!\n\n"
+                f"Agar xizmat topshirilsa / bajarilsa quyidagi tugmani bosing — "
+                f"post kanalda yangilanadi.",
+                reply_markup=done_kb,
             )
     except Exception:
         pass

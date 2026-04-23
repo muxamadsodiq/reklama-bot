@@ -13,6 +13,10 @@ from aiogram.types import (
 import database as db
 from config import SUPER_ADMIN_IDS
 
+
+def _is_super(uid: int) -> bool:
+    return uid in SUPER_ADMIN_IDS
+
 router = Router()
 log = logging.getLogger(__name__)
 
@@ -50,6 +54,8 @@ def sa_menu_kb():
             [InlineKeyboardButton(text="🌐 Global statistika", callback_data="sa:gstats")],
             [InlineKeyboardButton(text="📊 Statistika (so'rovnoma)", callback_data="sa:st:home")],
             [InlineKeyboardButton(text="🧷 Kanal tanlash sozlamalari", callback_data="sa:chs:home")],
+            [InlineKeyboardButton(text="🌳 Kanal tanlash daraxti", callback_data="sa:rt:home")],
+            [InlineKeyboardButton(text="👑 Super adminlar", callback_data="sa:su:home")],
             [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="u:home")],
         ]
     )
@@ -442,3 +448,588 @@ async def sa_chs_btn_save(msg: Message, state: FSMContext):
             parse_mode="HTML",
         )
     await state.clear()
+
+
+# ============================================================================
+# SUPER ADMIN BOSHQARUV (dinamik qo'shish/o'chirish)
+# ============================================================================
+class SuperAdminMgmt(StatesGroup):
+    wait_user_id = State()
+
+
+def _su_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Super admin qo'shish", callback_data="sa:su:add")],
+        [InlineKeyboardButton(text="📋 Ro'yxat", callback_data="sa:su:list")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:home")],
+    ])
+
+
+@router.callback_query(F.data == "sa:su:home")
+async def sa_su_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    total = len(SUPER_ADMIN_IDS)
+    await cb.message.edit_text(
+        f"👑 <b>Super adminlar</b>\n\nJoriy soni: <b>{total}</b>\n\n"
+        "Eslatma: .env (ROOT) dagi super admin o'chirilmaydi.",
+        reply_markup=_su_menu_kb(), parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:su:list")
+async def sa_su_list(cb: CallbackQuery):
+    from config import ROOT_SUPER_ADMIN_IDS
+    rows = await db.sa_list()
+    lines = ["👑 <b>Super adminlar</b>\n"]
+    lines.append("<b>Root (.env)</b>:")
+    for r in sorted(ROOT_SUPER_ADMIN_IDS):
+        lines.append(f"  • <code>{r}</code>  🔒")
+    lines.append("\n<b>DB (dinamik)</b>:")
+    kb_rows = []
+    if rows:
+        for r in rows:
+            name = r["full_name"] or (f"@{r['username']}" if r["username"] else "")
+            lines.append(f"  • <code>{r['user_id']}</code>  {name}")
+            kb_rows.append([InlineKeyboardButton(
+                text=f"🗑 {name or r['user_id']}",
+                callback_data=f"sa:su:del:{r['user_id']}")])
+    else:
+        lines.append("  (bo'sh)")
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:su:home")])
+    await cb.message.edit_text("\n".join(lines),
+                               reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                               parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:su:add")
+async def sa_su_add(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(SuperAdminMgmt.wait_user_id)
+    await cb.message.answer(
+        "Yangi super admin user ID sini yuboring (raqam).\n\n"
+        "❗️ User avval /start bosgan bo'lishi kerak.\n"
+        "❗️ User ID ni bilish uchun: @userinfobot"
+    )
+    await cb.answer()
+
+
+@router.message(SuperAdminMgmt.wait_user_id)
+async def sa_su_add_save(msg: Message, state: FSMContext, bot: Bot):
+    txt = (msg.text or "").strip()
+    if not txt.lstrip("-").isdigit():
+        await msg.answer("❌ Faqat raqam yuboring.")
+        return
+    uid = int(txt)
+    if uid in SUPER_ADMIN_IDS:
+        await msg.answer("Bu user allaqachon super admin.")
+        await state.clear()
+        return
+    username, full_name = None, None
+    try:
+        chat = await bot.get_chat(uid)
+        username = chat.username
+        full_name = chat.full_name
+    except Exception:
+        pass
+    await db.sa_add(uid, username, full_name, msg.from_user.id)
+    SUPER_ADMIN_IDS.add(uid)
+    await state.clear()
+    try:
+        await bot.send_message(uid, "👑 Siz super admin etib tayinlandingiz. /admins buyrug'i bilan panelni ochasiz.")
+    except Exception:
+        pass
+    await msg.answer(f"✅ Super admin qo'shildi: <code>{uid}</code>", parse_mode="HTML",
+                     reply_markup=_su_menu_kb())
+
+
+@router.callback_query(F.data.startswith("sa:su:del:"))
+async def sa_su_del(cb: CallbackQuery):
+    from config import ROOT_SUPER_ADMIN_IDS
+    uid = int(cb.data.split(":")[3])
+    if uid in ROOT_SUPER_ADMIN_IDS:
+        await cb.answer("❌ Root super adminni o'chirib bo'lmaydi", show_alert=True)
+        return
+    if uid == cb.from_user.id:
+        await cb.answer("❌ O'zingizni o'chirolmaysiz", show_alert=True)
+        return
+    await db.sa_remove(uid)
+    SUPER_ADMIN_IDS.discard(uid)
+    await cb.answer("🗑 O'chirildi")
+    await sa_su_list(cb)
+
+
+# ============================================================================
+# ROUTING TREE (kanal tanlash daraxti) — REJA4
+# ============================================================================
+class RTState(StatesGroup):
+    wait_q_text = State()      # savol matni
+    wait_a_text = State()      # javob matni
+    edit_text = State()        # node matnini tahrirlash
+
+
+def _rt_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌿 Daraxtni ko'rish", callback_data="sa:rt:view:0")],
+        [InlineKeyboardButton(text="➕ Root savol yaratish", callback_data="sa:rt:newroot")],
+        [InlineKeyboardButton(text="🗑 Butun daraxtni o'chirish", callback_data="sa:rt:wipe")],
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:home")],
+    ])
+
+
+@router.callback_query(F.data == "sa:rt:home")
+async def sa_rt_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    root = await db.routing_get_root_question()
+    txt = (
+        "🌳 <b>Kanal tanlash daraxti</b>\n\n"
+        "User reklama joylashda savollarga javob beradi. "
+        "Har javob keyingi savolga olib boradi. Oxirgi (leaf) node'ga kanallar biriktiriladi.\n\n"
+    )
+    if root:
+        txt += f"Root savol: <b>{root['text']}</b> (ID: <code>{root['id']}</code>)"
+    else:
+        txt += "⚠️ Root savol hali yaratilmagan. Fallback rejim: barcha aktiv kanallar ko'rsatiladi."
+    await cb.message.edit_text(txt, reply_markup=_rt_menu_kb(), parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:rt:newroot")
+async def sa_rt_newroot(cb: CallbackQuery, state: FSMContext):
+    root = await db.routing_get_root_question()
+    if root:
+        await cb.answer("Root allaqachon bor. Uni o'chiring yoki tahrirlang.", show_alert=True)
+        return
+    await state.set_state(RTState.wait_q_text)
+    await state.update_data(rt_parent_id=None, rt_kind="question")
+    await cb.message.answer("Root savol matnini yuboring (masalan: <i>Qaysi sohadasiz?</i>):",
+                            parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:rt:wipe")
+async def sa_rt_wipe(cb: CallbackQuery):
+    root = await db.routing_get_root_question()
+    if not root:
+        await cb.answer("Daraxt bo'sh", show_alert=True)
+        return
+    await db.routing_delete_node(root["id"])
+    await cb.answer("🗑 Daraxt o'chirildi", show_alert=True)
+    await sa_rt_home(cb, FSMContext(storage=None, key=None) if False else cb.message.bot and None)  # noqa
+    # soddaroq: redirect
+    root = await db.routing_get_root_question()
+    await cb.message.edit_text(
+        "🌳 <b>Kanal tanlash daraxti</b>\n\n⚠️ Daraxt bo'sh. Fallback: barcha aktiv kanallar.",
+        reply_markup=_rt_menu_kb(), parse_mode="HTML",
+    )
+
+
+async def _rt_view_node(cb: CallbackQuery, node_id: int):
+    if node_id == 0:
+        node = await db.routing_get_root_question()
+    else:
+        node = await db.routing_get_node(node_id)
+    if not node:
+        await cb.message.edit_text(
+            "⚠️ Node topilmadi yoki daraxt bo'sh.",
+            reply_markup=_rt_menu_kb(), parse_mode="HTML",
+        )
+        await cb.answer()
+        return
+    children = await db.routing_list_children(node["id"])
+    is_leaf = len(children) == 0
+    kind = "❓ Savol" if node["is_question"] else "💬 Javob"
+    parent_txt = ""
+    if node["parent_id"]:
+        p = await db.routing_get_node(node["parent_id"])
+        if p:
+            parent_txt = f"\nOta: <i>{p['text']}</i>"
+    txt = (
+        f"🌳 <b>{kind}</b>\n\n"
+        f"Matn: <b>{node['text']}</b>\n"
+        f"ID: <code>{node['id']}</code>{parent_txt}\n\n"
+    )
+    rows = []
+    if node["is_question"]:
+        txt += f"Javob variantlari: <b>{len(children)}</b>\n"
+        for ch in children:
+            rows.append([InlineKeyboardButton(
+                text=f"💬 {ch['text'][:40]}",
+                callback_data=f"sa:rt:view:{ch['id']}")])
+        rows.append([InlineKeyboardButton(text="➕ Javob variant qo'shish",
+                                          callback_data=f"sa:rt:addans:{node['id']}")])
+    else:
+        # javob node
+        if is_leaf:
+            linked = await db.routing_get_node_channels(node["id"])
+            txt += f"📡 Biriktirilgan kanallar: <b>{len(linked)}</b>\n"
+            rows.append([InlineKeyboardButton(text="📡 Kanallarni tanlash",
+                                              callback_data=f"sa:rt:ch:{node['id']}")])
+            rows.append([InlineKeyboardButton(text="❓ Keyingi savol qo'shish",
+                                              callback_data=f"sa:rt:addq:{node['id']}")])
+        else:
+            # javob → keyingi savol bor
+            for ch in children:
+                rows.append([InlineKeyboardButton(
+                    text=f"❓ {ch['text'][:40]}",
+                    callback_data=f"sa:rt:view:{ch['id']}")])
+    rows.append([InlineKeyboardButton(text="✏️ Matnni tahrirlash",
+                                      callback_data=f"sa:rt:edit:{node['id']}")])
+    rows.append([InlineKeyboardButton(text="🗑 O'chirish",
+                                      callback_data=f"sa:rt:del:{node['id']}")])
+    if node["parent_id"]:
+        rows.append([InlineKeyboardButton(text="⬅️ Ota nodega",
+                                          callback_data=f"sa:rt:view:{node['parent_id']}")])
+    rows.append([InlineKeyboardButton(text="🏠 Daraxt bosh", callback_data="sa:rt:home")])
+    await cb.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                               parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sa:rt:view:"))
+async def sa_rt_view(cb: CallbackQuery):
+    node_id = int(cb.data.split(":")[3])
+    await _rt_view_node(cb, node_id)
+
+
+@router.callback_query(F.data.startswith("sa:rt:addans:"))
+async def sa_rt_addans(cb: CallbackQuery, state: FSMContext):
+    parent_id = int(cb.data.split(":")[3])
+    await state.set_state(RTState.wait_a_text)
+    await state.update_data(rt_parent_id=parent_id, rt_kind="answer")
+    await cb.message.answer("Javob variant matnini yuboring (masalan: <i>Taksi</i>):",
+                            parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sa:rt:addq:"))
+async def sa_rt_addq(cb: CallbackQuery, state: FSMContext):
+    parent_id = int(cb.data.split(":")[3])
+    # Faqat javob nodega savol qo'shish mumkin
+    parent = await db.routing_get_node(parent_id)
+    if not parent or parent["is_question"]:
+        await cb.answer("❌ Savolga to'g'ridan-to'g'ri savol qo'shib bo'lmaydi", show_alert=True)
+        return
+    # Agar javobga kanallar biriktirilgan bo'lsa, ogohlantirish
+    linked = await db.routing_get_node_channels(parent_id)
+    if linked:
+        await cb.answer("⚠️ Bu javobda kanallar biriktirilgan. Savol qo'shsangiz kanallar o'chadi.",
+                        show_alert=True)
+    await state.set_state(RTState.wait_q_text)
+    await state.update_data(rt_parent_id=parent_id, rt_kind="question")
+    await cb.message.answer("Savol matnini yuboring:")
+    await cb.answer()
+
+
+@router.message(RTState.wait_q_text)
+@router.message(RTState.wait_a_text)
+async def sa_rt_save_new(msg: Message, state: FSMContext):
+    text = (msg.text or "").strip()
+    if not text or len(text) > 200:
+        await msg.answer("❌ Matn bo'sh yoki 200 belgidan uzun bo'lmasligi kerak.")
+        return
+    data = await state.get_data()
+    parent_id = data.get("rt_parent_id")
+    kind = data.get("rt_kind")
+    is_q = 1 if kind == "question" else 0
+    # Agar parent javob node bo'lsa va unga kanallar bog'langan bo'lsa, savol qo'shilganda kanallarni o'chiramiz
+    if parent_id:
+        await db.routing_set_node_channels(parent_id, [])
+    new_id = await db.routing_create_node(parent_id, text, is_q, position=0)
+    await state.clear()
+    await msg.answer(f"✅ Qo'shildi (ID: <code>{new_id}</code>)", parse_mode="HTML")
+    # view the new node
+    class _Fake:
+        pass
+    # Reuse by editing a sent message:
+    sent = await msg.answer("Yuklanmoqda...")
+    # Avoid duplicating logic: build keyboard inline
+    node = await db.routing_get_node(new_id)
+    rows = [[InlineKeyboardButton(text="🌳 Daraxt bosh", callback_data="sa:rt:home")],
+            [InlineKeyboardButton(text="👀 Ko'rish", callback_data=f"sa:rt:view:{new_id}")]]
+    await sent.edit_text(
+        f"Yangi node: <b>{node['text']}</b> (ID: <code>{new_id}</code>)",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("sa:rt:edit:"))
+async def sa_rt_edit(cb: CallbackQuery, state: FSMContext):
+    node_id = int(cb.data.split(":")[3])
+    await state.set_state(RTState.edit_text)
+    await state.update_data(rt_edit_id=node_id)
+    await cb.message.answer("Yangi matnni yuboring:")
+    await cb.answer()
+
+
+@router.message(RTState.edit_text)
+async def sa_rt_edit_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    node_id = data.get("rt_edit_id")
+    text = (msg.text or "").strip()
+    if not text or len(text) > 200:
+        await msg.answer("❌ Matn noto'g'ri")
+        return
+    await db.routing_update_text(node_id, text)
+    await state.clear()
+    await msg.answer("✅ Tahrirlandi")
+
+
+@router.callback_query(F.data.startswith("sa:rt:del:"))
+async def sa_rt_del(cb: CallbackQuery):
+    node_id = int(cb.data.split(":")[3])
+    node = await db.routing_get_node(node_id)
+    if not node:
+        await cb.answer("Topilmadi", show_alert=True)
+        return
+    parent_id = node["parent_id"]
+    await db.routing_delete_node(node_id)
+    await cb.answer("🗑 O'chirildi")
+    if parent_id:
+        # go to parent
+        cb.data = f"sa:rt:view:{parent_id}"
+        await _rt_view_node(cb, parent_id)
+    else:
+        await sa_rt_home(cb, None)
+
+
+@router.callback_query(F.data.startswith("sa:rt:ch:"))
+async def sa_rt_ch(cb: CallbackQuery):
+    node_id = int(cb.data.split(":")[3])
+    node = await db.routing_get_node(node_id)
+    if not node:
+        await cb.answer("Topilmadi", show_alert=True)
+        return
+    linked = set(await db.routing_get_node_channels(node_id))
+    channels = await db.list_channels()
+    rows = []
+    for ch in channels:
+        mark = "✅" if ch["id"] in linked else "☑️"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {ch['title']}",
+            callback_data=f"sa:rt:chtg:{node_id}:{ch['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"sa:rt:view:{node_id}")])
+    await cb.message.edit_text(
+        f"📡 <b>{node['text']}</b>\n\nKanallarni tanlang (tugmani bosib belgilang):",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sa:rt:chtg:"))
+async def sa_rt_chtg(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    node_id = int(parts[3])
+    ch_id = int(parts[4])
+    added = await db.routing_toggle_channel(node_id, ch_id)
+    await cb.answer("✅ Qo'shildi" if added else "❌ Olindi")
+    # refresh
+    cb.data = f"sa:rt:ch:{node_id}"
+    await sa_rt_ch(cb)
+
+
+# ============================================================================
+# TOPSHIRILDI / DONE RULES — REJA5 (super admin template field'larga qoida qo'shish)
+# ============================================================================
+# Bu yerda "sa:fld:done:<field_id>" tugmasi template_fields ro'yxatida
+# har bir maydon uchun ko'rinadi — uni toggle qiladi va matnni so'raydi.
+# Admin tarafida template_fields ro'yxatida yangi tugma qo'shamiz (admin.py'da).
+class DoneRule(StatesGroup):
+    wait_text = State()
+
+
+@router.callback_query(F.data.startswith("sa:fld:donetxt:"))
+async def sa_fld_donetxt(cb: CallbackQuery, state: FSMContext):
+    field_id = int(cb.data.split(":")[3])
+    await state.set_state(DoneRule.wait_text)
+    await state.update_data(fld_id=field_id)
+    await cb.message.answer(
+        "Bu maydon uchun 'Topshirildi' holatidagi matnni yuboring.\n"
+        "Masalan: <code>✅ Topshirildi</code> yoki <code>🔒 Yopildi</code>",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(DoneRule.wait_text)
+async def sa_fld_donetxt_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    fld_id = data.get("fld_id")
+    txt = (msg.text or "").strip()
+    if not txt or len(txt) > 200:
+        await msg.answer("❌ Matn 1-200 belgi bo'lishi kerak")
+        return
+    await db.field_set_done_rule(fld_id, 1, txt)
+    await state.clear()
+    await msg.answer(f"✅ Saqlandi. Endi user 'Topshirildi' bossa bu maydon '<b>{txt}</b>' ga almashadi.",
+                     parse_mode="HTML")
+
+
+# ============================================================================
+# ROUTING TREE (REJA4) — 1-daraja MVP
+# Ildiz savol → javoblar → har bir javob uchun kanallar
+# ============================================================================
+class RTState(StatesGroup):
+    wait_root_text = State()
+    wait_answer_text = State()
+
+
+async def _rt_render_home(message):
+    root = await db.routing_get_root_question()
+    if not root:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Ildiz savol qo'shish", callback_data="sa:rt:add_root")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:home")],
+        ])
+        await message.edit_text(
+            "🌳 <b>Kanal tanlash daraxti</b>\n\n"
+            "Hozircha daraxt yo'q — user <b>'Yangi reklama'</b> bosganda barcha kanallar ko'rsatiladi.\n\n"
+            "Ildiz savol qo'shing (masalan: <i>«Qaysi hududdan?»</i>).",
+            parse_mode="HTML", reply_markup=kb)
+        return
+    answers = await db.routing_list_children(root["id"])
+    rows = [[InlineKeyboardButton(text=f"❓ {root['text'][:50]}", callback_data="sa:rt:edit_root")]]
+    for a in answers:
+        ch_ids = await db.routing_get_node_channels(a["id"])
+        cnt = len(ch_ids)
+        rows.append([InlineKeyboardButton(
+            text=f"   ↳ {a['text'][:40]}  [{cnt} kanal]",
+            callback_data=f"sa:rt:ans:{a['id']}")])
+    rows.append([InlineKeyboardButton(text="➕ Javob qo'shish", callback_data="sa:rt:add_ans")])
+    rows.append([InlineKeyboardButton(text="🗑 Ildizni o'chirish (daraxtni tozalash)", callback_data="sa:rt:del_root")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:home")])
+    await message.edit_text(
+        f"🌳 <b>Kanal tanlash daraxti</b>\n\n"
+        f"Ildiz savol: <b>{root['text']}</b>\n"
+        f"Javoblar soni: {len(answers)}",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "sa:rt:home")
+async def sa_rt_home(cb: CallbackQuery):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    await _rt_render_home(cb.message); await cb.answer()
+
+
+@router.callback_query(F.data == "sa:rt:add_root")
+async def sa_rt_add_root(cb: CallbackQuery, state: FSMContext):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(RTState.wait_root_text)
+    await cb.message.answer("Ildiz savol matnini yuboring (masalan: <b>Qaysi hududdan?</b>):", parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:rt:edit_root")
+async def sa_rt_edit_root(cb: CallbackQuery, state: FSMContext):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(RTState.wait_root_text)
+    await state.update_data(rt_edit=1)
+    await cb.message.answer("Yangi ildiz savol matnini yuboring:")
+    await cb.answer()
+
+
+@router.message(RTState.wait_root_text)
+async def sa_rt_root_save(msg: Message, state: FSMContext):
+    if not _is_super(msg.from_user.id):
+        return
+    txt = (msg.text or "").strip()
+    if not txt or len(txt) > 200:
+        await msg.answer("❌ 1-200 belgi"); return
+    data = await state.get_data()
+    if data.get("rt_edit"):
+        root = await db.routing_get_root_question()
+        if root:
+            await db.routing_update_node(root["id"], text=txt)
+    else:
+        await db.routing_create_node(parent_id=None, text=txt, is_question=1)
+    await state.clear()
+    await msg.answer("✅ Saqlandi")
+
+
+@router.callback_query(F.data == "sa:rt:del_root")
+async def sa_rt_del_root(cb: CallbackQuery):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    root = await db.routing_get_root_question()
+    if root:
+        await db.routing_delete_subtree(root["id"])
+    await cb.answer("🗑 O'chirildi")
+    await _rt_render_home(cb.message)
+
+
+@router.callback_query(F.data == "sa:rt:add_ans")
+async def sa_rt_add_ans(cb: CallbackQuery, state: FSMContext):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    root = await db.routing_get_root_question()
+    if not root:
+        await cb.answer("Avval ildiz savolni qo'shing", show_alert=True); return
+    await state.set_state(RTState.wait_answer_text)
+    await state.update_data(rt_parent=root["id"])
+    await cb.message.answer("Javob variant matnini yuboring (masalan: <b>Toshkent</b>):", parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(RTState.wait_answer_text)
+async def sa_rt_ans_save(msg: Message, state: FSMContext):
+    if not _is_super(msg.from_user.id):
+        return
+    txt = (msg.text or "").strip()
+    if not txt or len(txt) > 100:
+        await msg.answer("❌ 1-100 belgi"); return
+    data = await state.get_data()
+    parent = data.get("rt_parent")
+    await db.routing_create_node(parent_id=parent, text=txt, is_question=0)
+    await state.clear()
+    await msg.answer("✅ Javob qo'shildi")
+
+
+@router.callback_query(F.data.startswith("sa:rt:ans:"))
+async def sa_rt_ans_view(cb: CallbackQuery):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    ans_id = int(cb.data.split(":")[3])
+    node = await db.routing_get_node(ans_id)
+    if not node:
+        await cb.answer("Topilmadi", show_alert=True); return
+    linked = set(await db.routing_get_node_channels(ans_id))
+    channels = await db.list_channels()
+    rows = [[InlineKeyboardButton(
+        text=("✅ " if c["id"] in linked else "⚪️ ") + c["name"],
+        callback_data=f"sa:rt:chtog:{ans_id}:{c['id']}")]
+        for c in channels]
+    rows.append([InlineKeyboardButton(text="🗑 Javobni o'chirish", callback_data=f"sa:rt:ans_del:{ans_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:rt:home")])
+    await cb.message.edit_text(
+        f"↳ <b>{node['text']}</b>\n\nShu javob uchun qaysi kanallar ko'rsatilsin?",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sa:rt:chtog:"))
+async def sa_rt_chtog(cb: CallbackQuery):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    _, _, _, ans_id, ch_id = cb.data.split(":")
+    ans_id = int(ans_id); ch_id = int(ch_id)
+    linked = set(await db.routing_get_node_channels(ans_id))
+    if ch_id in linked:
+        await db.routing_unlink_channel(ans_id, ch_id)
+    else:
+        await db.routing_link_channel(ans_id, ch_id)
+    cb.data = f"sa:rt:ans:{ans_id}"
+    await sa_rt_ans_view(cb)
+
+
+@router.callback_query(F.data.startswith("sa:rt:ans_del:"))
+async def sa_rt_ans_del(cb: CallbackQuery):
+    if not _is_super(cb.from_user.id):
+        await cb.answer("❌", show_alert=True); return
+    ans_id = int(cb.data.split(":")[3])
+    await db.routing_delete_subtree(ans_id)
+    await cb.answer("🗑 O'chirildi")
+    await _rt_render_home(cb.message)
