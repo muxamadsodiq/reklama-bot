@@ -1,0 +1,153 @@
+REJA8 — AI-POWERED SHABLON TO'LDIRISH (Groq + per-channel templates)
+=====================================================================
+
+MAQSAD
+------
+Har kanal uchun admin o'z shablonini belgilaydi (masalan: Nomi, Narxi,
+Holati, Manzil, Telefon, Tavsif). Foydalanuvchi e'lon yozganda bot Groq
+AI orqali matnni shu shablonga avtomatik ajratadi (kiril→lotin, tartibsiz
+matn → tuzilgan maydonlar), tap-to-copy qilib chiqaradi, majburiy bo'sh
+maydonlarni alohida so'raydi, har maydonni ✏️ bilan tahrirlash mumkin.
+
+TANLANGAN ARXITEKTURA
+---------------------
+1. AI provayder: Groq API
+   - Primary: llama-3.3-70b-versatile (1K req/kun, 100K tok/kun)
+   - Fallback: llama-3.1-8b-instant (14.4K req/kun, 500K tok/kun)
+   - Auto-fallback rate limit/429 bo'lsa
+2. Template storage: per-channel DB jadval
+3. Default shablon (agar admin yaratmasa):
+   Nomi*, Narxi*, Holati (Yangi/Ishlatilgan), Manzil, Telefon*, Tavsif
+4. Permissions: kanal owner + super admin tahrirlay oladi
+5. Parser pipeline:
+   a) Regex urinish: "Maydon: qiymat" shaklini izlash
+   b) 50%+ topilsa → AI faqat tozalash (kirill→lotin, format)
+   c) Regex yetmasa → butun matnni AI JSON ajratadi
+   d) Majburiy maydon bo'sh → user'dan alohida so'rash
+   e) Har maydon yonida ✏️ tahrirlash tugmasi
+6. UI: <pre> HTML bilan tap-to-copy ko'rsatiladi
+
+DB SCHEMA
+---------
+CREATE TABLE channel_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL,
+  field_key TEXT NOT NULL,         -- 'name', 'price', 'phone'...
+  label TEXT NOT NULL,             -- 'Nomi', 'Narxi'...
+  type TEXT DEFAULT 'text',        -- text | number | choice | phone
+  required INTEGER DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  options_json TEXT,               -- ["Yangi","Ishlatilgan"] uchun
+  UNIQUE(channel_id, field_key)
+);
+
+Seed: default 6 maydon yangi kanal qo'shilganda avtomatik
+yaratiladi (yoki migratsiyada mavjud kanallarga).
+
+FAYLLAR
+-------
+Yangi:
+- ai_parser.py          — Groq klient + pipeline (regex → AI)
+- handlers/templates.py — admin/super admin shablon CRUD UI
+- (migratsiya database.py'da qilinadi)
+
+O'zgartirish:
+- .env               → GROQ_API_KEY qo'shish
+- requirements.txt   → groq (yoki httpx bilan raw POST)
+- database.py        → jadval + CRUD funksiyalar
+- handlers/admin.py  → /sozlash menyusida "📋 Shablon"
+- handlers/user.py   → yangi rejim: AI orqali to'ldirish
+- main.py            → yangi router include
+
+USER FLOW (yangi)
+-----------------
+1. /start → "➕ Yangi e'lon" → kanal tanlash
+2. "📝 Matnni yuboring (istalgan shaklda)" — user tashlaydi
+3. Bot yuklamoqda... AI tahlili
+4. Natija:
+   ┌─────────────────────────────┐
+   │ 📋 Nomi: Samsung A54         │✏️
+   │ 💰 Narxi: 3 500 000 so'm    │✏️
+   │ 📍 Manzil: Toshkent, Chilon  │✏️
+   │ 📞 Telefon: +998 90 123 45 67│✏️
+   │ 📄 Tavsif: Yaxshi holatda... │✏️
+   └─────────────────────────────┘
+   [✅ Tasdiqlash] [🖼 Rasm qo'shish]
+5. Agar majburiy bo'sh bo'lsa → "Telefon raqamingizni yuboring"
+6. Tasdiqlangach → oldingi oqim (preview → moderation)
+
+ADMIN FLOW (shablon sozlash)
+-----------------------------
+/sozlash → "📋 Shablon" → kanal tanlash →
+  ➕ Maydon qo'shish
+  📝 Maydonni tahrirlash (label, type, required, options)
+  ❌ Maydonni o'chirish
+  🔄 Default'ga tiklash
+
+GROQ PROMPT (system)
+--------------------
+"Sen O'zbekistondagi reklama e'lonlarini strukturaga ajratuvchi
+assistantsan. Berilgan matnni JSON formatida qaytar. Kiril yozuvni
+lotinchaga o'gir. Telefon raqamlarni +998 XX XXX XX XX formatida,
+narxni '3 500 000 so'm' shaklida normallashtir. Agar maydon topilmasa
+null qo'y. FAQAT JSON qaytar, boshqa matn yo'q.
+
+Shablon maydonlari: {fields_schema}
+Foydalanuvchi matni: {user_text}"
+
+BOSQICHLAR (build order)
+------------------------
+Faza 1 — TEST bot'da:
+  [1] .env ga GROQ_API_KEY
+  [2] requirements.txt + venv install
+  [3] database.py migratsiya + CRUD
+  [4] ai_parser.py (regex + Groq + fallback)
+  [5] handlers/templates.py (admin CRUD UI)
+  [6] handlers/user.py ga AI flow integratsiya
+  [7] Default template seed
+  [8] main.py router include
+  [9] systemd restart → 1 ta kanal bilan sinash
+  [10] Kiril/tartibsiz/rasmli matn testlari
+
+Faza 2 — PROD:
+  [11] Test'dan o'zgarishlarni prod'ga ko'chirish (rsync -a)
+  [12] Prod .env + restart
+  [13] Live kanal bilan sinash
+  [14] Git commit + push
+
+FALLBACK VA XATOLAR
+-------------------
+- Groq 429/rate limit → llama-3.1-8b-instant
+- Ikkala model xato → regex natijasini ko'rsatish (yarim to'liq)
+- To'liq xato → user'ga "AI hozir ishlamayapti, oddiy shaklda yozing:
+  Nomi: ... Narxi: ..." deb xabar
+- Timeout 15 sek → cancel, user'ga "qayta urinish" tugmasi
+
+CALLBACK NAMES
+--------------
+- tmpl:list:<channel_id>      — shablon ko'rish
+- tmpl:add:<channel_id>       — maydon qo'shish
+- tmpl:edit:<field_id>        — tahrirlash
+- tmpl:del:<field_id>         — o'chirish
+- tmpl:reset:<channel_id>     — default'ga
+- u:ai:edit:<field_key>       — user AI natijasini tahrirlash
+- u:ai:confirm                — tasdiqlash
+- u:ai:retry                  — qayta tahlil
+
+TESTING CHECKLIST
+-----------------
+[ ] Kiril matn → lotin konvertatsiya
+[ ] Emojili tartibsiz matn → strukturaga
+[ ] Majburiy maydon bo'sh → so'rov
+[ ] ✏️ tahrirlash — har maydon
+[ ] Super admin boshqa kanalning shablonini tahrirlash
+[ ] Admin faqat o'z kanalini ko'radi
+[ ] AI timeout/error graceful fallback
+[ ] Rate limit → 8b modelga avto-o'tish
+
+KEYINGI FAZA IDEYALARI (REJA9+)
+-------------------------------
+- Rasm OCR (Groq vision yoki Tesseract)
+- Ko'p tilli: rus/o'zbek/ingliz
+- Maydon history (ko'p ishlatilgan qiymatlar uchun autocomplete)
+- Telefon validatsiya (O'zbekiston operatorlari)

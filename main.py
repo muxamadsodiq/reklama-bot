@@ -5,7 +5,9 @@ import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ErrorEvent
 
 from config import BOT_TOKEN, LOG_PATH
 import database as db
@@ -47,6 +49,28 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Global error handler — jim yutiladigan odatiy Telegram xatolari
+    @dp.errors()
+    async def _on_error(event: ErrorEvent):
+        exc = event.exception
+        log_ = logging.getLogger("errors")
+        if isinstance(exc, TelegramBadRequest):
+            msg = str(exc).lower()
+            # Qayta takroran bosilgan tugma / o'zgarmagan message — foydalanuvchiga ko'rsatmaymiz
+            if "message is not modified" in msg or "query is too old" in msg or "message to edit not found" in msg or "message can't be edited" in msg:
+                return True
+            log_.warning(f"TelegramBadRequest: {exc}")
+            return True
+        if isinstance(exc, TelegramForbiddenError):
+            log_.info(f"Forbidden (user blocked bot?): {exc}")
+            return True
+        if isinstance(exc, TelegramRetryAfter):
+            log_.warning(f"Flood wait {exc.retry_after}s")
+            return True
+        log_.exception("Unhandled error", exc_info=exc)
+        return True
+
     # Bot faqat shaxsiy chatda javob beradi. Guruh/kanalda sukut saqlaydi.
     admin.router.message.filter(F.chat.type == "private")
     user.router.message.filter(F.chat.type == "private")

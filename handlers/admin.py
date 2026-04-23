@@ -255,20 +255,40 @@ async def ch_view(cb: CallbackQuery):
     fields = await db.list_fields(ch_id)
     tpl_info = "✅ Shablon bor" if tpl else "⚠️ Shablon yo'q"
     fields_info = f"📝 {len(fields)} ta savol" if fields else "—"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📝 Shablonni yangilash", callback_data=f"own:tpl:{ch_id}")],
-            [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
-            [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
-            [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")],
-            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")],
-        ]
-    )
+    kb_rows = [
+        [InlineKeyboardButton(text="📝 Shablonni yangilash", callback_data=f"own:tpl:{ch_id}")],
+        [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
+        [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
+    ]
+    if not fields:
+        kb_rows.append([InlineKeyboardButton(text="📋 Default shablonni o'rnatish", callback_data=f"own:seed:{ch_id}")])
+    kb_rows.append([InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await cb.message.edit_text(
         f"📍 {ch['name']}\nchat_id: {ch['chat_id']}\n{tpl_info}\n{fields_info}",
         reply_markup=kb,
     )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("own:seed:"))
+async def ch_seed_template(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    default_fields = [
+        {"key": "name", "question": "Nomi", "order_idx": 0, "show_in_public": 1},
+        {"key": "price", "question": "Narxi", "order_idx": 1, "show_in_public": 1},
+        {"key": "condition", "question": "Holati (Yangi/Ishlatilgan)", "order_idx": 2, "show_in_public": 1},
+        {"key": "location", "question": "Manzil", "order_idx": 3, "show_in_public": 1},
+        {"key": "phone", "question": "Telefon", "order_idx": 4, "show_in_public": 1},
+        {"key": "description", "question": "Tavsif", "order_idx": 5, "show_in_public": 1},
+    ]
+    await db.replace_fields(ch_id, default_fields)
+    await cb.answer("✅ Default shablon o'rnatildi (6 ta maydon)", show_alert=True)
+    await ch_view(cb)
 
 
 @router.callback_query(F.data.startswith("own:del:"))

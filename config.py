@@ -13,5 +13,7 @@ ROOT_SUPER_ADMIN_IDS = set(ADMIN_IDS)
 # Barcha joylarda `uid in SUPER_ADMIN_IDS` ishlatilgani uchun MUTABLE set.
 SUPER_ADMIN_IDS = set(ROOT_SUPER_ADMIN_IDS)
 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "reklama.db")
 LOG_PATH = os.path.join(os.path.dirname(__file__), "logs", "bot.log")

@@ -394,12 +394,11 @@ function renderDetail(d) {
     .map(([k,v]) => `<div class="field-row"><span class="k">${escapeHtml(k)}</span><span class="v">${highlight(String(v), state.tokens)}</span></div>`)
     .join('');
 
-  const sellerBtn = d.user_id
-    ? `<button class="secondary-btn" data-seller="${d.user_id}">👤 E'lon beruvchi${d.username ? ' (@' + escapeHtml(d.username) + ')' : ''}</button>`
-    : '';
-  const contactBtn = d.username
-    ? `<a class="secondary-btn" href="https://t.me/${escapeHtml(d.username)}" target="_blank">💬 Yozish</a>`
-    : '';
+  // E'lon joylashgan kanal/guruh — daraxtdan tanlangan va post qilingan joy.
+  // Muloqot faqat shu kanal/guruh orqali (boglanish tugmalari yo'q).
+  const channelBtn = d.channel_url
+    ? `<a class="primary-btn channel-open" href="${escapeHtml(d.channel_url)}" target="_blank" rel="noopener">📢 Kanalda ko'rish va bog'lanish</a>`
+    : '<div class="muted" style="text-align:center;padding:8px">E\'lon kanali mavjud emas</div>';
 
   els.detailContent.innerHTML = `
     <div class="detail-head">
@@ -416,11 +415,9 @@ function renderDetail(d) {
     ${description ? `<div class="detail-desc">${highlight(description, state.tokens)}</div>` : ''}
     ${fields ? `<div class="detail-fields">${fields}</div>` : ''}
     <div class="detail-actions">
-      <button class="primary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
+      ${channelBtn}
+      <button class="secondary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
       <button class="secondary-btn" id="detailShareBtn" data-ad-id="${d.id}">🔗 Ulashish</button>
-      ${sellerBtn}
-      ${contactBtn}
-      ${d.channel_url ? `<a class="secondary-btn" href="${escapeHtml(d.channel_url)}" target="_blank">📢 Kanalda ochish</a>` : ''}
     </div>
   `;
   setupImgObserver();
@@ -627,12 +624,6 @@ document.addEventListener('click', async (e) => {
     state.category = { id: parseInt(catBtn.dataset.catId), title: catBtn.dataset.catTitle };
     state.page = 1;
     loadAds();
-    return;
-  }
-  const sellerBtn2 = e.target.closest('[data-seller]');
-  if (sellerBtn2) {
-    e.stopPropagation();
-    loadSeller(parseInt(sellerBtn2.dataset.seller));
     return;
   }
   const favBtn = e.target.closest('[data-fav]');

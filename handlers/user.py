@@ -25,6 +25,8 @@ class UserAd(StatesGroup):
     ask_url = State()
     ask_media = State()
     preview = State()
+    ai_text = State()
+    edit_single = State()
 
 
 async def is_super(uid: int) -> bool:
@@ -319,14 +321,178 @@ async def _legacy_channels(cb: CallbackQuery):  # placeholder yo'q
 @router.callback_query(UserAd.select_channels, F.data.startswith("u:tog:"))
 async def pick_channel(cb: CallbackQuery, state: FSMContext):
     ch_id = int(cb.data.split(":")[2])
-    # Bitta bosish → shu kanal tanlandi va darhol flow boshlanadi
+    # Bitta bosish → shu kanal tanlandi
     await state.update_data(selected=[ch_id], queue=[ch_id], current_idx=0)
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
+    # REJA8: AI yoki manual rejimini tanlash
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 AI bilan to'ldirish", callback_data="u:mode:ai")],
+        [InlineKeyboardButton(text="✍️ Har savolga javob", callback_data="u:mode:manual")],
+    ])
+    await cb.message.answer(
+        "Qanday usulda to'ldirmoqchisiz?\n\n"
+        "🤖 <b>AI bilan</b> — e'lon matnini bir marta yuborasiz, bot o'zi ajratadi\n"
+        "✍️ <b>Har savolga javob</b> — bot har bir maydon uchun alohida so'raydi",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+    await cb.answer()
+
+
+@router.callback_query(UserAd.select_channels, F.data == "u:mode:manual")
+async def mode_manual(cb: CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.update_data(mode="manual")
     await start_channel_flow(cb.message, state)
     await cb.answer()
+
+
+@router.callback_query(UserAd.select_channels, F.data == "u:mode:ai")
+async def mode_ai(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    queue = data.get("queue") or []
+    if not queue:
+        await cb.answer("Xato", show_alert=True)
+        return
+    ch_id = queue[0]
+    ch = await db.get_channel(ch_id)
+    tpl = await db.get_template(ch_id)
+    if not tpl:
+        await cb.message.answer(f"⚠️ {ch['name']} uchun shablon yo'q")
+        await state.clear()
+        await cb.answer()
+        return
+    fields = await db.list_fields(ch_id)
+    if not fields:
+        # eski shablonlar uchun fallback
+        from utils.template_parser import extract_placeholders
+        pub_ph = extract_placeholders(tpl["text_template"])
+        prv_ph = extract_placeholders(tpl["private_text_template"] or "")
+        reserved = {"username", "user_id", "ad_id"}
+        keys = []
+        for k in pub_ph + prv_ph:
+            if k in reserved: continue
+            if k not in keys: keys.append(k)
+        fields = [
+            {"key": k, "question": f"{k} ni kiriting:", "show_in_public": (k in pub_ph)}
+            for k in keys
+        ]
+    await state.update_data(
+        mode="ai",
+        cur_ch_id=ch_id,
+        cur_fields=[dict(f) for f in fields],
+        cur_field_idx=0,
+        cur_filled={},
+        cur_custom_url=None,
+        cur_media_file_id=None,
+        cur_media_type=None,
+    )
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.set_state(UserAd.ai_text)
+    await cb.message.answer(
+        f"📝 «{ch['name']}» uchun e'lon matnini istalgan shaklda yuboring "
+        "(kirill yozuv ham mumkin). AI o'zi kerakli ma'lumotlarni ajratadi."
+    )
+    await cb.answer()
+
+
+@router.message(UserAd.ai_text)
+async def ai_text_received(msg: Message, state: FSMContext):
+    text = (msg.text or msg.caption or "").strip()
+    if not text:
+        await msg.answer("Iltimos, e'lon matnini yuboring.")
+        return
+    data = await state.get_data()
+    fields = data.get("cur_fields") or []
+    await state.update_data(last_ai_text=text)
+    await msg.answer("🤖 AI matnni tahlil qilmoqda, biroz kuting...")
+    try:
+        import ai_parser
+        parsed = await ai_parser.parse_ad_text(text, fields)
+    except Exception:
+        log.exception("AI parse failed")
+        parsed = {}
+    # cur_filled ga yozamiz
+    filled = {}
+    for f in fields:
+        v = parsed.get(f["key"])
+        if v and str(v).strip() and str(v).strip().lower() != "null":
+            filled[f["key"]] = str(v).strip()
+    await state.update_data(cur_filled=filled)
+    # Agar AI hech narsa topmasa — manual'ga o'tish taklif qil
+    if not filled:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Manual rejimga o'tish", callback_data="u:mode:manual")],
+            [InlineKeyboardButton(text="🔄 Yana urinib ko'rish", callback_data="u:ai:retry")],
+        ])
+        await msg.answer(
+            "⚠️ AI hozir ishlamayapti yoki matndan ma'lumot ajratolmadi.\n"
+            "Iltimos, oddiy shaklda («Nomi: ..., Narxi: ...») yozib yuboring yoki ✍️ manual rejimga o'ting.",
+            reply_markup=kb,
+        )
+        return
+    # Bo'sh maydonlarni topamiz — barcha fieldlar majburiy hisoblanadi
+    missing_idx = None
+    for i, f in enumerate(fields):
+        if f["key"] not in filled:
+            missing_idx = i
+            break
+    if missing_idx is None:
+        # Hammasi to'ldi — AI natijasini ko'rsatamiz, keyin ask_url/media
+        summary = "\n".join(f"• <b>{f.get('question','').rstrip(':').rstrip('?')}:</b> {filled[f['key']]}" for f in fields)
+        await msg.answer(f"✅ AI quyidagilarni topdi:\n\n{summary}", parse_mode="HTML")
+        tpl = await db.get_template(data["cur_ch_id"])
+        if tpl["button_url_by_user"]:
+            await state.set_state(UserAd.ask_url)
+            await msg.answer("Tugma uchun havolani kiriting (https://...):")
+            return
+        if tpl["media_required"]:
+            await state.set_state(UserAd.ask_media)
+            await msg.answer("Rasm yoki video yuboring (o'tkazib yuborish: /skip):")
+            return
+        await show_preview(msg, state)
+        return
+    # Bo'sh maydon — qolganlarini ketma-ket so'raymiz
+    found_cnt = len(filled)
+    await msg.answer(
+        f"ℹ️ AI {found_cnt}/{len(fields)} maydonni topdi. Qolganini qo'lda to'ldiring:"
+    )
+    await state.update_data(cur_field_idx=missing_idx)
+    await ask_next_field_skip_filled(msg, state)
+
+
+async def ask_next_field_skip_filled(msg: Message, state: FSMContext):
+    """ask_next_field kabi, lekin allaqachon to'ldirilgan fieldlarni o'tkazadi."""
+    data = await state.get_data()
+    fields = data["cur_fields"]
+    filled = data.get("cur_filled") or {}
+    idx = data["cur_field_idx"]
+    while idx < len(fields) and fields[idx]["key"] in filled:
+        idx += 1
+    await state.update_data(cur_field_idx=idx)
+    if idx < len(fields):
+        await state.set_state(UserAd.fill_field)
+        await msg.answer(fields[idx]["question"])
+        return
+    tpl = await db.get_template(data["cur_ch_id"])
+    if tpl["button_url_by_user"]:
+        await state.set_state(UserAd.ask_url)
+        await msg.answer("Tugma uchun havolani kiriting (https://...):")
+        return
+    if tpl["media_required"]:
+        await state.set_state(UserAd.ask_media)
+        await msg.answer("Rasm yoki video yuboring (o'tkazib yuborish: /skip):")
+        return
+    await show_preview(msg, state)
 
 
 async def start_channel_flow(msg: Message, state: FSMContext):
@@ -410,7 +576,8 @@ async def fill_field(msg: Message, state: FSMContext):
     filled = dict(data["cur_filled"])
     filled[fields[idx]["key"]] = msg.text or ""
     await state.update_data(cur_filled=filled, cur_field_idx=idx + 1)
-    await ask_next_field(msg, state)
+    # AI rejimida allaqachon to'ldirilgan fieldlarni o'tkazib yuboramiz
+    await ask_next_field_skip_filled(msg, state)
 
 
 @router.message(UserAd.ask_url)
@@ -504,7 +671,7 @@ async def show_preview(msg: Message, state: FSMContext):
     lines = [f"👁 «{ch['name']}» uchun kiritilgan ma'lumotlar:"]
     for f in data["cur_fields"]:
         val = data["cur_filled"].get(f["key"], "")
-        lines.append(f"• {f['key']}: {val}")
+        lines.append(f"• {f['question'].rstrip(':').rstrip('?')}: {val}")
     if data.get("cur_custom_url"):
         lines.append(f"🔗 Tugma havolasi: {data['cur_custom_url']}")
     media_list = data.get("cur_media_list") or []
@@ -515,18 +682,105 @@ async def show_preview(msg: Message, state: FSMContext):
     elif data.get("cur_media_type") == "video":
         lines.append("🎬 Video biriktirildi")
     lines.append("")
+    lines.append("✏️ Har bir maydonni alohida tahrirlash uchun pastdagi tugmalardan foydalaning.")
     lines.append("ℹ️ Reklama tasdiqlangandan so'ng kanalga chiqadi.")
 
-    action_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Yuborish", callback_data="u:send"),
-                InlineKeyboardButton(text="🔄 Qayta", callback_data="u:retry"),
-            ]
-        ]
-    )
+    # Per-field edit tugmalari
+    kb_rows = []
+    for f in data["cur_fields"]:
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"✏️ {f['question'].rstrip(':').rstrip('?')}",
+                callback_data=f"u:ef:{f['key']}",
+            )
+        ])
+    # AI retry (faqat AI rejimidan)
+    if data.get("mode") == "ai" and data.get("last_ai_text"):
+        kb_rows.append([
+            InlineKeyboardButton(text="🔄 AI qayta tahlil", callback_data="u:ai:retry")
+        ])
+    kb_rows.append([
+        InlineKeyboardButton(text="✅ Yuborish", callback_data="u:send"),
+        InlineKeyboardButton(text="🔄 Hammasini qaytadan", callback_data="u:retry"),
+    ])
+    action_kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await state.set_state(UserAd.preview)
     await msg.answer("\n".join(lines), reply_markup=action_kb)
+
+
+@router.callback_query(UserAd.preview, F.data.startswith("u:ef:"))
+async def edit_field_cb(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":", 2)[2]
+    data = await state.get_data()
+    fields = data.get("cur_fields") or []
+    field = next((f for f in fields if f["key"] == key), None)
+    if not field:
+        await cb.answer("Maydon topilmadi", show_alert=True)
+        return
+    await state.update_data(edit_key=key)
+    await state.set_state(UserAd.edit_single)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer(
+        f"✏️ <b>{field['question'].rstrip(':').rstrip('?')}</b> uchun yangi qiymat kiriting:",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(UserAd.edit_single)
+async def edit_single_received(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    key = data.get("edit_key")
+    if not key:
+        await show_preview(msg, state)
+        return
+    filled = dict(data.get("cur_filled") or {})
+    filled[key] = (msg.text or "").strip()
+    await state.update_data(cur_filled=filled, edit_key=None)
+    await msg.answer("✅ Yangilandi")
+    await show_preview(msg, state)
+
+
+@router.callback_query(UserAd.preview, F.data == "u:ai:retry")
+async def ai_retry_preview(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if data.get("mode") != "ai":
+        await cb.answer("Faqat AI rejimida", show_alert=True)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.set_state(UserAd.ai_text)
+    await cb.message.answer(
+        "📝 E'lon matnini yangidan yuboring — AI qaytadan tahlil qiladi."
+    )
+    await cb.answer()
+
+
+# AI rejimida "manual'ga o'tish" tugmasi (ai_text state ichida)
+@router.callback_query(UserAd.ai_text, F.data == "u:mode:manual")
+async def ai_to_manual(cb: CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.update_data(mode="manual", cur_filled={}, cur_field_idx=0)
+    await ask_next_field(cb.message, state)
+    await cb.answer()
+
+
+@router.callback_query(UserAd.ai_text, F.data == "u:ai:retry")
+async def ai_retry_from_fail(cb: CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer("📝 E'lon matnini yana yuboring.")
+    await cb.answer()
 
 
 @router.callback_query(UserAd.preview, F.data == "u:retry")
