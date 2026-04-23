@@ -281,6 +281,7 @@ def _ad_row_to_card(r):
         "media_file_id": r["media_file_id"],
         "view_count": r["view_count"] or 0,
         "thumb_url": f"api/thumb/{r['media_file_id']}" if r["media_file_id"] else None,
+        "is_sold": bool(r["sold_at"]) if "sold_at" in r.keys() else False,
     }
 
 
@@ -362,7 +363,7 @@ async def api_ads(
             # Python-side sort/filter by price
             cur = conn.execute(
                 f"""SELECT a.id, a.filled_data, a.media_file_id, a.media_type,
-                           a.created_at, a.category_id, a.view_count, a.media_list
+                           a.created_at, a.category_id, a.view_count, a.media_list, a.sold_at
                     FROM ads a
                     WHERE {where_sql}""",
                 params,
@@ -387,7 +388,7 @@ async def api_ads(
             offset = (page - 1) * page_size
             cur = conn.execute(
                 f"""SELECT a.id, a.filled_data, a.media_file_id, a.media_type,
-                           a.created_at, a.category_id, a.view_count, a.media_list
+                           a.created_at, a.category_id, a.view_count, a.media_list, a.sold_at
                     FROM ads a
                     WHERE {where_sql}
                     ORDER BY {order_sql}
@@ -522,6 +523,8 @@ async def api_ad_detail(ad_id: int):
             "public_text": public_text,
             "button_label": button_label,
             "has_premium_gate": has_premium_gate,
+            "has_full_info": has_premium_gate,  # REJA10: full-info tugmasi ham premium-gated
+            "is_sold": bool((conn.execute("SELECT sold_at FROM ads WHERE id=?", (r['id'],)).fetchone() or [None])[0]),
         }
     finally:
         conn.close()
@@ -607,6 +610,8 @@ async def api_rates():
 # REJA9: contact button — premium gating via private-group membership
 @app.post("/api/contact/{ad_id}")
 async def api_contact(ad_id: int, payload: dict):
+    """REJA10: Aloqa tugmasi — faqat contact_field qiymatini DM qiladi.
+    Agar user maxfiy guruh a'zosi bo'lmasa — premium alert qaytaradi."""
     init_data = (payload or {}).get("init_data") or ""
     fallback_uid = (payload or {}).get("user_id")
     user_id: Optional[int] = None
@@ -617,8 +622,6 @@ async def api_contact(ad_id: int, payload: dict):
         except Exception:
             user_id = None
     if not user_id and fallback_uid:
-        # MVP fallback: frontend sends Telegram.WebApp.initDataUnsafe.user.id
-        # TODO: require valid initData HMAC for stricter security
         try:
             user_id = int(fallback_uid)
         except Exception:
@@ -629,7 +632,7 @@ async def api_contact(ad_id: int, payload: dict):
     conn = db()
     try:
         ad = conn.execute(
-            "SELECT id, filled_data, posted_chat_id, media_file_id, media_type, media_list FROM ads WHERE id=? AND status='approved'",
+            "SELECT id, filled_data, posted_chat_id FROM ads WHERE id=? AND status='approved'",
             (ad_id,),
         ).fetchone()
         if not ad:
@@ -637,8 +640,7 @@ async def api_contact(ad_id: int, payload: dict):
         tpl = None
         if ad["posted_chat_id"]:
             tpl = conn.execute(
-                """SELECT t.text_template, t.private_chat_id, t.private_text_template,
-                          t.premium_url
+                """SELECT t.private_chat_id, t.premium_url, t.contact_field_key
                    FROM templates t JOIN channels c ON c.id=t.channel_id
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
@@ -650,64 +652,167 @@ async def api_contact(ad_id: int, payload: dict):
     finally:
         conn.close()
 
-    if not tpl or not tpl["private_chat_id"]:
-        # Maxfiy guruh sozlanmagan — baribir premium gate talab qilamiz
-        return {"ok": False, "sent": False,
-                "premium_url": (tpl["premium_url"] if tpl else "") or "",
+    premium_url = (tpl["premium_url"] if tpl else "") or ""
+    private_chat_id = tpl["private_chat_id"] if tpl else None
+    contact_key = (tpl["contact_field_key"] if tpl else "") or ""
+
+    if not private_chat_id:
+        return {"ok": False, "sent": False, "premium_url": premium_url,
+                "message": "Maxfiy guruh sozlanmagan"}
+
+    if not _is_member(private_chat_id, user_id):
+        return {"ok": False, "sent": False, "premium_url": premium_url,
                 "message": "Siz premium obunachi emassiz"}
 
-    private_chat_id = tpl["private_chat_id"]
-    premium_url = tpl["premium_url"] or ""
-    private_text_tpl = tpl["private_text_template"] or tpl["text_template"] or ""
+    # Aloqa qiymati = contact_field_key dan, yo'q bo'lsa phone/telefon fallback
+    contact_value = ""
+    if contact_key and contact_key in filled:
+        contact_value = str(filled[contact_key] or "")
+    if not contact_value:
+        for k in ("phone", "telefon", "contact", "tel", "nomer"):
+            if filled.get(k):
+                contact_value = str(filled[k])
+                break
+    if not contact_value:
+        return {"ok": False, "error": "contact_field bo'sh", "premium_url": premium_url}
 
-    # Check membership via Bot API (HTTP — no aiogram dep here)
-    if not BOT_TOKEN:
-        raise HTTPException(500, "bot token missing")
-    import urllib.parse, urllib.request
+    text = f"📞 Aloqa: <b>{contact_value}</b>\n\n🆔 E'lon #{ad_id}"
     try:
-        q = urllib.parse.urlencode({"chat_id": private_chat_id, "user_id": user_id})
+        sb = _tg_post("sendMessage", {
+            "chat_id": user_id, "text": text,
+            "parse_mode": "HTML", "disable_web_page_preview": "true",
+        })
+        if not sb.get("ok"):
+            return {"ok": False, "error": sb.get("description", "send_failed"), "premium_url": premium_url}
+    except Exception as e:
+        return {"ok": False, "error": f"send_failed: {e}", "premium_url": premium_url}
+
+    return {"ok": True, "sent": True, "message": "Aloqa ma'lumoti yuborildi"}
+
+
+# REJA10 helpers
+def _tg_post(method: str, payload: dict):
+    import urllib.parse, urllib.request
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    data = urllib.parse.urlencode(payload).encode()
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=15) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if not res.get("ok"):
+                print(f"[REJA10 _tg_post] {method} failed: {res}", flush=True)
+            return res
+    except Exception as e:
+        print(f"[REJA10 _tg_post] {method} EXC: {e}", flush=True)
+        return {"ok": False, "description": str(e)}
+
+
+def _is_member(chat_id, user_id) -> bool:
+    import urllib.parse, urllib.request
+    if not BOT_TOKEN:
+        print("[REJA10 _is_member] BOT_TOKEN missing", flush=True)
+        return False
+    try:
+        q = urllib.parse.urlencode({"chat_id": chat_id, "user_id": user_id})
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember?{q}"
         with urllib.request.urlopen(url, timeout=10) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        return {"ok": False, "error": f"membership_check_failed: {e}", "premium_url": premium_url}
+        print(f"[REJA10 _is_member] EXC chat={chat_id} user={user_id}: {e}", flush=True)
+        return False
+    if not body.get("ok"):
+        print(f"[REJA10 _is_member] NOT OK chat={chat_id} user={user_id}: {body}", flush=True)
+        return False
+    status = (body.get("result") or {}).get("status", "")
+    is_mem = status in ("creator", "administrator", "member", "restricted")
+    print(f"[REJA10 _is_member] chat={chat_id} user={user_id} status={status} → {is_mem}", flush=True)
+    return is_mem
 
-    status = ""
-    if body.get("ok") and body.get("result"):
-        status = body["result"].get("status", "")
-    is_member = status in ("creator", "administrator", "member", "restricted")
 
-    if not is_member:
+@app.post("/api/full-info/{ad_id}")
+async def api_full_info(ad_id: int, payload: dict):
+    """REJA10: To'liq ma'lumot tugmasi — maxfiy guruh postini (media+matn)
+    userga DM qiladi. Faqat maxfiy guruh a'zolari uchun."""
+    init_data = (payload or {}).get("init_data") or ""
+    fallback_uid = (payload or {}).get("user_id")
+    user_id: Optional[int] = None
+    v = validate_init_data(init_data) if init_data else None
+    if v and "user" in v:
+        try:
+            user_id = int(v["user"].get("id"))
+        except Exception:
+            user_id = None
+    if not user_id and fallback_uid:
+        try:
+            user_id = int(fallback_uid)
+        except Exception:
+            user_id = None
+    if not user_id:
+        raise HTTPException(401, "user_id required")
+
+    conn = db()
+    try:
+        ad = conn.execute(
+            """SELECT id, filled_data, posted_chat_id, media_file_id, media_type, media_list,
+                      private_posted_chat_id, private_posted_message_id
+               FROM ads WHERE id=? AND status='approved'""",
+            (ad_id,),
+        ).fetchone()
+        if not ad:
+            raise HTTPException(404, "ad not found")
+        tpl = None
+        if ad["posted_chat_id"]:
+            tpl = conn.execute(
+                """SELECT t.private_chat_id, t.private_text_template, t.text_template,
+                          t.premium_url, t.id_prefix
+                   FROM templates t JOIN channels c ON c.id=t.channel_id
+                   WHERE c.chat_id=? LIMIT 1""",
+                (str(ad["posted_chat_id"]),),
+            ).fetchone()
+        try:
+            filled = json.loads(ad["filled_data"] or "{}")
+        except Exception:
+            filled = {}
+        try:
+            media_list = json.loads(ad["media_list"] or "[]")
+        except Exception:
+            media_list = []
+    finally:
+        conn.close()
+
+    if not tpl or not tpl["private_chat_id"]:
+        return {"ok": False, "sent": False, "message": "Maxfiy guruh sozlanmagan"}
+
+    premium_url = tpl["premium_url"] or ""
+    private_chat_id = tpl["private_chat_id"]
+
+    if not _is_member(private_chat_id, user_id):
         return {"ok": False, "sent": False, "premium_url": premium_url,
                 "message": "Siz premium obunachi emassiz"}
 
-    # Send private text to user (with media if present, like private-group post)
-    text = safe_format(private_text_tpl, filled) or "—"
-    # Parse media_list (0..5 items)
-    media_list = []
-    try:
-        _ml_raw = ad["media_list"]
-        if _ml_raw:
-            media_list = json.loads(_ml_raw) or []
-    except Exception:
-        media_list = []
-    single_media_file = ad["media_file_id"]
-    single_media_type = ad["media_type"]  # 'photo' | 'video' | None
+    # 1-variant: forwardMessage — agar bizda maxfiy post ref bo'lsa
+    if ad["private_posted_chat_id"] and ad["private_posted_message_id"]:
+        try:
+            sb = _tg_post("copyMessage", {
+                "chat_id": user_id,
+                "from_chat_id": ad["private_posted_chat_id"],
+                "message_id": ad["private_posted_message_id"],
+            })
+            if sb.get("ok"):
+                return {"ok": True, "sent": True, "message": "Post yuborildi"}
+        except Exception:
+            pass  # fallback to 2-variant
 
-    import urllib.parse, urllib.request
-
-    def _tg_post(method: str, payload: dict):
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
-        data = urllib.parse.urlencode(payload).encode()
-        with urllib.request.urlopen(url, data=data, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    # 2-variant: qayta qurish — private_text_template + media_list
+    priv_tpl = tpl["private_text_template"] or tpl["text_template"] or ""
+    prefix = (tpl["id_prefix"] or "_")
+    extra = dict(filled)
+    extra["ad_id"] = f"#{prefix}{ad_id:04d}"
+    text = safe_format(priv_tpl, extra) or "—"
 
     try:
         CAPTION_LIMIT = 1024
         cap_fits = len(text) <= CAPTION_LIMIT
-
         if len(media_list) >= 2:
-            # sendMediaGroup — first item gets caption if it fits
             items = []
             for i, m in enumerate(media_list[:10]):
                 mtype = "video" if m.get("type") == "video" else "photo"
@@ -716,55 +821,208 @@ async def api_contact(ad_id: int, payload: dict):
                     item["caption"] = text
                     item["parse_mode"] = "HTML"
                 items.append(item)
-            sb = _tg_post("sendMediaGroup", {
-                "chat_id": user_id,
-                "media": json.dumps(items),
-            })
+            sb = _tg_post("sendMediaGroup", {"chat_id": user_id, "media": json.dumps(items)})
             if not sb.get("ok"):
-                return {"ok": False, "error": sb.get("description", "send_failed"),
-                        "premium_url": premium_url}
+                return {"ok": False, "error": sb.get("description", "send_failed")}
             if not cap_fits:
-                # send text as separate message
-                sb2 = _tg_post("sendMessage", {
-                    "chat_id": user_id, "text": text,
-                    "parse_mode": "HTML", "disable_web_page_preview": "true",
-                })
-                if not sb2.get("ok"):
-                    return {"ok": False, "error": sb2.get("description", "send_failed"),
-                            "premium_url": premium_url}
-        elif single_media_file and single_media_type == "photo":
-            payload = {"chat_id": user_id, "photo": single_media_file, "parse_mode": "HTML"}
-            if cap_fits:
-                payload["caption"] = text
-            sb = _tg_post("sendPhoto", payload)
+                _tg_post("sendMessage", {"chat_id": user_id, "text": text,
+                                         "parse_mode": "HTML", "disable_web_page_preview": "true"})
+        elif ad["media_file_id"] and ad["media_type"] == "photo":
+            p = {"chat_id": user_id, "photo": ad["media_file_id"], "parse_mode": "HTML"}
+            if cap_fits: p["caption"] = text
+            sb = _tg_post("sendPhoto", p)
             if not sb.get("ok"):
-                return {"ok": False, "error": sb.get("description", "send_failed"), "premium_url": premium_url}
+                return {"ok": False, "error": sb.get("description", "send_failed")}
             if not cap_fits:
-                sb2 = _tg_post("sendMessage", {"chat_id": user_id, "text": text,
-                                               "parse_mode": "HTML", "disable_web_page_preview": "true"})
-                if not sb2.get("ok"):
-                    return {"ok": False, "error": sb2.get("description", "send_failed"), "premium_url": premium_url}
-        elif single_media_file and single_media_type == "video":
-            payload = {"chat_id": user_id, "video": single_media_file, "parse_mode": "HTML"}
-            if cap_fits:
-                payload["caption"] = text
-            sb = _tg_post("sendVideo", payload)
+                _tg_post("sendMessage", {"chat_id": user_id, "text": text, "parse_mode": "HTML"})
+        elif ad["media_file_id"] and ad["media_type"] == "video":
+            p = {"chat_id": user_id, "video": ad["media_file_id"], "parse_mode": "HTML"}
+            if cap_fits: p["caption"] = text
+            sb = _tg_post("sendVideo", p)
             if not sb.get("ok"):
-                return {"ok": False, "error": sb.get("description", "send_failed"), "premium_url": premium_url}
+                return {"ok": False, "error": sb.get("description", "send_failed")}
             if not cap_fits:
-                sb2 = _tg_post("sendMessage", {"chat_id": user_id, "text": text,
-                                               "parse_mode": "HTML", "disable_web_page_preview": "true"})
-                if not sb2.get("ok"):
-                    return {"ok": False, "error": sb2.get("description", "send_failed"), "premium_url": premium_url}
+                _tg_post("sendMessage", {"chat_id": user_id, "text": text, "parse_mode": "HTML"})
         else:
             sb = _tg_post("sendMessage", {"chat_id": user_id, "text": text,
                                           "parse_mode": "HTML", "disable_web_page_preview": "true"})
             if not sb.get("ok"):
-                return {"ok": False, "error": sb.get("description", "send_failed"), "premium_url": premium_url}
+                return {"ok": False, "error": sb.get("description", "send_failed")}
     except Exception as e:
-        return {"ok": False, "error": f"send_failed: {e}", "premium_url": premium_url}
+        return {"ok": False, "error": f"send_failed: {e}"}
 
-    return {"ok": True, "sent": True, "message": "Telegram botga yuborildi"}
+    return {"ok": True, "sent": True, "message": "To'liq ma'lumot yuborildi"}
+
+
+@app.get("/api/my-ads")
+async def api_my_ads(init_data: str = Query("", alias="init_data"),
+                     user_id: int = Query(0, alias="user_id")):
+    """REJA10: User o'z e'lonlari ro'yxati."""
+    uid = None
+    v = validate_init_data(init_data) if init_data else None
+    if v and "user" in v:
+        try: uid = int(v["user"].get("id"))
+        except Exception: uid = None
+    if not uid and user_id:
+        uid = int(user_id)
+    if not uid:
+        raise HTTPException(401, "user_id required")
+
+    conn = db()
+    try:
+        rows = conn.execute(
+            """SELECT id, filled_data, media_file_id, created_at, view_count, sold_at,
+                      posted_chat_id, posted_message_id
+               FROM ads WHERE user_id=? AND status='approved'
+               ORDER BY id DESC LIMIT 100""",
+            (uid,),
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                d = json.loads(r["filled_data"] or "{}")
+            except Exception:
+                d = {}
+            items.append({
+                "id": r["id"],
+                "title": d.get("title") or d.get("nomi") or f"E'lon #{r['id']}",
+                "price": d.get("price") or d.get("narx") or d.get("narxi") or "",
+                "created_at": r["created_at"],
+                "view_count": r["view_count"] or 0,
+                "sold": bool(r["sold_at"]),
+                "thumb_url": f"api/thumb/{r['media_file_id']}" if r["media_file_id"] else None,
+            })
+        return {"items": items, "total": len(items)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/ads/{ad_id}/sold")
+async def api_ad_sold(ad_id: int, payload: dict):
+    """REJA10: Postni 'sotildi' deb belgilash.
+    - filled_data'dagi sold_field_key → sold_replacement bilan almashtiriladi
+    - Kanal va maxfiy guruh postlari edit qilinadi (matn yoki caption)
+    - WebApp'da ham ko'rinishi o'zgaradi"""
+    init_data = (payload or {}).get("init_data") or ""
+    fallback_uid = (payload or {}).get("user_id")
+    uid = None
+    v = validate_init_data(init_data) if init_data else None
+    if v and "user" in v:
+        try: uid = int(v["user"].get("id"))
+        except Exception: uid = None
+    if not uid and fallback_uid:
+        try: uid = int(fallback_uid)
+        except Exception: uid = None
+    if not uid:
+        raise HTTPException(401, "user_id required")
+
+    conn = db()
+    try:
+        ad = conn.execute(
+            """SELECT id, user_id, filled_data, media_file_id, media_type, media_list,
+                      posted_chat_id, posted_message_id,
+                      private_posted_chat_id, private_posted_message_id,
+                      sold_at
+               FROM ads WHERE id=? AND status='approved'""",
+            (ad_id,),
+        ).fetchone()
+        if not ad:
+            raise HTTPException(404, "ad not found")
+        if ad["user_id"] != uid:
+            raise HTTPException(403, "not your ad")
+        if ad["sold_at"]:
+            return {"ok": True, "already_sold": True}
+        tpl = None
+        if ad["posted_chat_id"]:
+            tpl = conn.execute(
+                """SELECT t.text_template, t.private_text_template, t.id_prefix,
+                          t.sold_field_key, t.sold_replacement
+                   FROM templates t JOIN channels c ON c.id=t.channel_id
+                   WHERE c.chat_id=? LIMIT 1""",
+                (str(ad["posted_chat_id"]),),
+            ).fetchone()
+        try:
+            filled = json.loads(ad["filled_data"] or "{}")
+        except Exception:
+            filled = {}
+    finally:
+        conn.close()
+
+    if not tpl:
+        raise HTTPException(400, "template missing")
+    sold_key = tpl["sold_field_key"] or ""
+    sold_val = tpl["sold_replacement"] or "🔴 SOTILDI"
+
+    # filled_data'ni yangilaymiz
+    new_filled = dict(filled)
+    if sold_key:
+        new_filled[sold_key] = sold_val
+    else:
+        # agar sold_field_key sozlanmagan bo'lsa — title/nomi bo'yicha
+        for k in ("title", "nomi"):
+            if k in new_filled:
+                new_filled[k] = f"{sold_val} — {new_filled[k]}"
+                break
+
+    import datetime as _dt
+    new_json = json.dumps(new_filled, ensure_ascii=False)
+
+    conn = db()
+    try:
+        conn.execute(
+            "UPDATE ads SET filled_data=?, sold_at=? WHERE id=?",
+            (new_json, _dt.datetime.utcnow().isoformat(), ad_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    prefix = tpl["id_prefix"] or "_"
+    extra = dict(new_filled)
+    extra["ad_id"] = f"#{prefix}{ad_id:04d}"
+
+    # Kanal postini edit
+    edit_errors = []
+    if ad["posted_chat_id"] and ad["posted_message_id"] and tpl["text_template"]:
+        new_public = safe_format(tpl["text_template"], extra)
+        if "{ad_id}" not in tpl["text_template"]:
+            new_public = f"{new_public}\n\n🆔 #{prefix}{ad_id:04d}"
+        try:
+            has_media = bool(ad["media_file_id"]) or bool((ad["media_list"] or "").strip() not in ("", "[]"))
+            method = "editMessageCaption" if has_media else "editMessageText"
+            key = "caption" if has_media else "text"
+            sb = _tg_post(method, {
+                "chat_id": ad["posted_chat_id"],
+                "message_id": ad["posted_message_id"],
+                key: new_public[:1024] if has_media else new_public,
+                "parse_mode": "HTML",
+            })
+            if not sb.get("ok"):
+                edit_errors.append(f"channel: {sb.get('description')}")
+        except Exception as e:
+            edit_errors.append(f"channel_ex: {e}")
+
+    # Maxfiy guruh postini edit
+    if ad["private_posted_chat_id"] and ad["private_posted_message_id"] and tpl["private_text_template"]:
+        new_priv = safe_format(tpl["private_text_template"], extra)
+        if "{ad_id}" not in (tpl["private_text_template"] or ""):
+            new_priv = f"{new_priv}\n\n🆔 #{prefix}{ad_id:04d}"
+        try:
+            has_media = bool(ad["media_file_id"]) or bool((ad["media_list"] or "").strip() not in ("", "[]"))
+            method = "editMessageCaption" if has_media else "editMessageText"
+            key = "caption" if has_media else "text"
+            sb = _tg_post(method, {
+                "chat_id": ad["private_posted_chat_id"],
+                "message_id": ad["private_posted_message_id"],
+                key: new_priv[:1024] if has_media else new_priv,
+                "parse_mode": "HTML",
+            })
+            if not sb.get("ok"):
+                edit_errors.append(f"private: {sb.get('description')}")
+        except Exception as e:
+            edit_errors.append(f"private_ex: {e}")
+
+    return {"ok": True, "sold": True, "edit_errors": edit_errors}
 
 
 @app.post("/api/ads/{ad_id}/view")

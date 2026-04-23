@@ -348,6 +348,9 @@ async def upsert_template(
     private_text_template: str | None = None,
     id_prefix: str = "_",
     premium_url: str | None = None,
+    contact_field_key: str | None = None,
+    sold_field_key: str | None = None,
+    sold_replacement: str | None = None,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -359,7 +362,8 @@ async def upsert_template(
                 """UPDATE templates SET text_template=?, button_label=?,
                    button_caption=?, button_url=?, button_url_by_user=?,
                    media_required=?, private_chat_id=?, private_text_template=?,
-                   id_prefix=?, premium_url=?
+                   id_prefix=?, premium_url=?,
+                   contact_field_key=?, sold_field_key=?, sold_replacement=?
                    WHERE channel_id=?""",
                 (
                     text_template,
@@ -372,6 +376,9 @@ async def upsert_template(
                     private_text_template,
                     id_prefix,
                     premium_url,
+                    contact_field_key,
+                    sold_field_key,
+                    sold_replacement,
                     channel_id,
                 ),
             )
@@ -379,8 +386,9 @@ async def upsert_template(
             await db.execute(
                 """INSERT INTO templates(channel_id, text_template, button_label,
                    button_caption, button_url, button_url_by_user, media_required,
-                   private_chat_id, private_text_template, id_prefix, premium_url)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                   private_chat_id, private_text_template, id_prefix, premium_url,
+                   contact_field_key, sold_field_key, sold_replacement)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     channel_id,
                     text_template,
@@ -393,6 +401,9 @@ async def upsert_template(
                     private_text_template,
                     id_prefix,
                     premium_url,
+                    contact_field_key,
+                    sold_field_key,
+                    sold_replacement,
                 ),
             )
         await db.commit()
@@ -1164,6 +1175,42 @@ async def set_ad_posted_refs(ad_id: int, posted_chat_id: str | None, posted_mess
             (posted_chat_id, posted_message_id, group_chat_id, group_message_id, ad_id),
         )
         await db.commit()
+
+
+async def set_ad_private_refs(ad_id: int, private_chat_id: str | None, private_message_id: int | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ads SET private_posted_chat_id=?, private_posted_message_id=? WHERE id=?",
+            (private_chat_id, private_message_id, ad_id),
+        )
+        await db.commit()
+
+
+async def mark_ad_sold(ad_id: int, new_filled_data_json: str):
+    """Mark ad as sold and update filled_data (sold_field replaced)."""
+    from datetime import datetime, timezone
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ads SET filled_data=?, sold_at=? WHERE id=?",
+            (new_filled_data_json, datetime.now(timezone.utc).isoformat(), ad_id),
+        )
+        await db.commit()
+
+
+async def list_user_ads(user_id: int, limit: int = 50):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """SELECT id, filled_data, media_file_id, created_at, sold_at,
+                      posted_chat_id, posted_message_id,
+                      private_posted_chat_id, private_posted_message_id,
+                      view_count
+               FROM ads
+               WHERE user_id=? AND status='approved'
+               ORDER BY id DESC LIMIT ?""",
+            (user_id, limit),
+        )
+        return await cur.fetchall()
 
 
 async def get_ad_full(ad_id: int):

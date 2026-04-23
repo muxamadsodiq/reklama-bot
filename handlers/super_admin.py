@@ -55,6 +55,7 @@ def sa_menu_kb():
             [InlineKeyboardButton(text="📊 Statistika (so'rovnoma)", callback_data="sa:st:home")],
             [InlineKeyboardButton(text="🧷 Kanal tanlash sozlamalari", callback_data="sa:chs:home")],
             [InlineKeyboardButton(text="🌳 Kanal tanlash daraxti", callback_data="sa:rt:home")],
+            [InlineKeyboardButton(text="✍️ Adminga yozish (link)", callback_data="sa:ac:home")],
             [InlineKeyboardButton(text="👑 Super adminlar", callback_data="sa:su:home")],
             [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="u:home")],
         ]
@@ -911,3 +912,135 @@ async def cmd_seticon(msg: Message):
             return
     await msg.answer(f"✅ #{node_id} icon o'rnatildi: {icon}")
 
+
+
+
+# ============================================================================
+# ADMIN CONTACT LINK — REJA11 (bosh menyudagi "Adminga yozish" tugma sozlash)
+# ============================================================================
+class AdminContact(StatesGroup):
+    wait_label = State()
+    wait_url = State()
+
+
+def _ac_home_kb(has_url: bool):
+    rows = [
+        [InlineKeyboardButton(text="🏷 Tugma matnini o'zgartirish", callback_data="sa:ac:label")],
+        [InlineKeyboardButton(text="🔗 Havolani o'zgartirish", callback_data="sa:ac:url")],
+    ]
+    if has_url:
+        rows.append([InlineKeyboardButton(text="🗑 Tugmani o'chirish", callback_data="sa:ac:del")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="sa:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "sa:ac:home")
+async def sa_ac_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    label = (await db.get_setting("admin_contact_label")) or "✍️ Adminga yozish"
+    url = (await db.get_setting("admin_contact_url")) or ""
+    status = "✅ Faol" if url else "⛔ Faolsiz (havola yo'q)"
+    await cb.message.edit_text(
+        "✍️ <b>Adminga yozish tugmasi</b>\n\n"
+        "Bu tugma foydalanuvchilar bosh menyusida ko'rinadi va bosilganda\n"
+        "siz bergan havolaga o'tkazadi (masalan Telegram profili yoki t.me/username).\n\n"
+        f"<b>Holat:</b> {status}\n"
+        f"<b>Tugma matni:</b> <code>{label}</code>\n"
+        f"<b>Havola:</b> <code>{url or '—'}</code>",
+        parse_mode="HTML",
+        reply_markup=_ac_home_kb(bool(url)),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "sa:ac:label")
+async def sa_ac_label_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminContact.wait_label)
+    current = (await db.get_setting("admin_contact_label")) or "✍️ Adminga yozish"
+    await cb.message.answer(
+        "🏷 Tugma matnini yuboring (max 64 belgi).\n\n"
+        f"Hozirgi: <code>{current}</code>\n\n"
+        "Standart matnga qaytarish uchun: <code>-</code>",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(AdminContact.wait_label)
+async def sa_ac_label_save(msg: Message, state: FSMContext):
+    txt = (msg.text or "").strip()
+    if txt == "-":
+        await db.set_setting("admin_contact_label", None)
+        await msg.answer("✅ Standart matnga qaytarildi: ✍️ Adminga yozish")
+    else:
+        if len(txt) > 64:
+            txt = txt[:64]
+        await db.set_setting("admin_contact_label", txt)
+        await msg.answer(f"✅ Saqlandi: <code>{txt}</code>", parse_mode="HTML")
+    await state.clear()
+    url = (await db.get_setting("admin_contact_url")) or ""
+    label = (await db.get_setting("admin_contact_label")) or "✍️ Adminga yozish"
+    status = "✅ Faol" if url else "⛔ Faolsiz (havola yo'q)"
+    await msg.answer(
+        f"<b>Holat:</b> {status}\n<b>Tugma matni:</b> <code>{label}</code>\n<b>Havola:</b> <code>{url or '—'}</code>",
+        parse_mode="HTML",
+        reply_markup=_ac_home_kb(bool(url)),
+    )
+
+
+@router.callback_query(F.data == "sa:ac:url")
+async def sa_ac_url_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminContact.wait_url)
+    current = (await db.get_setting("admin_contact_url")) or "—"
+    await cb.message.answer(
+        "🔗 Havolani yuboring.\n\n"
+        "Qabul qilinadigan formatlar:\n"
+        "• <code>@username</code> → t.me/username ga aylantiriladi\n"
+        "• <code>https://t.me/username</code>\n"
+        "• <code>tg://user?id=123456</code>\n"
+        "• <code>https://...</code>\n\n"
+        f"Hozirgi: <code>{current}</code>\n\n"
+        "O'chirish uchun: <code>-</code>",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(AdminContact.wait_url)
+async def sa_ac_url_save(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip()
+    if raw == "-":
+        await db.set_setting("admin_contact_url", None)
+        await msg.answer("🗑 Havola o'chirildi. Tugma endi ko'rinmaydi.")
+        await state.clear()
+        return
+    # normalize
+    if raw.startswith("@") and len(raw) > 1:
+        url = f"https://t.me/{raw[1:]}"
+    elif raw.startswith("t.me/") or raw.startswith("telegram.me/"):
+        url = "https://" + raw
+    elif raw.startswith(("http://", "https://", "tg://")):
+        url = raw
+    else:
+        await msg.answer(
+            "❌ Havola formati noto'g'ri. Namuna:\n"
+            "• @username\n• https://t.me/username\n• https://example.com"
+        )
+        return
+    await db.set_setting("admin_contact_url", url)
+    await msg.answer(f"✅ Saqlandi: <code>{url}</code>", parse_mode="HTML")
+    await state.clear()
+    label = (await db.get_setting("admin_contact_label")) or "✍️ Adminga yozish"
+    await msg.answer(
+        f"<b>Holat:</b> ✅ Faol\n<b>Tugma matni:</b> <code>{label}</code>\n<b>Havola:</b> <code>{url}</code>",
+        parse_mode="HTML",
+        reply_markup=_ac_home_kb(True),
+    )
+
+
+@router.callback_query(F.data == "sa:ac:del")
+async def sa_ac_del(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await db.set_setting("admin_contact_url", None)
+    await cb.answer("🗑 Havola o'chirildi", show_alert=True)
+    await sa_ac_home(cb, state)

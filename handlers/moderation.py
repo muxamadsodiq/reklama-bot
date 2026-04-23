@@ -147,6 +147,7 @@ async def approve(cb: CallbackQuery, bot: Bot):
                 uname = ""
             extra.setdefault("username", uname)
             extra["ad_id"] = format_ad_id(ad_id, prefix)
+            priv_sent_msg = None
             try:
                 priv_text = fill_template(priv_tpl, extra)
                 if "{ad_id}" not in (priv_tpl or ""):
@@ -160,13 +161,25 @@ async def approve(cb: CallbackQuery, bot: Bot):
                             pgroup.append(InputMediaPhoto(media=m["file_id"], caption=cap))
                         else:
                             pgroup.append(InputMediaVideo(media=m["file_id"], caption=cap))
-                    await bot.send_media_group(priv_chat, pgroup)
+                    sent_group = await bot.send_media_group(priv_chat, pgroup)
+                    if sent_group:
+                        priv_sent_msg = sent_group[0]
                 elif ad["media_file_id"] and ad["media_type"] == "photo":
-                    await bot.send_photo(priv_chat, ad["media_file_id"], caption=priv_text)
+                    priv_sent_msg = await bot.send_photo(priv_chat, ad["media_file_id"], caption=priv_text)
                 elif ad["media_file_id"] and ad["media_type"] == "video":
-                    await bot.send_video(priv_chat, ad["media_file_id"], caption=priv_text)
+                    priv_sent_msg = await bot.send_video(priv_chat, ad["media_file_id"], caption=priv_text)
                 else:
-                    await bot.send_message(priv_chat, priv_text)
+                    priv_sent_msg = await bot.send_message(priv_chat, priv_text)
+                # Save private refs for later "full info" resends / sold edits
+                if priv_sent_msg is not None:
+                    try:
+                        await db.set_ad_private_refs(
+                            ad_id=ad_id,
+                            private_chat_id=str(priv_chat),
+                            private_message_id=priv_sent_msg.message_id,
+                        )
+                    except Exception as e:
+                        log.warning(f"set_ad_private_refs failed: {e}")
             except Exception as e:
                 errors.append(f"{ch['name']} (maxfiy): {e}")
                 log.exception("send to private chat failed")

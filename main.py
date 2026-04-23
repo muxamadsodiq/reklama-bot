@@ -12,6 +12,7 @@ from aiogram.types import ErrorEvent
 from config import BOT_TOKEN, LOG_PATH
 import database as db
 from handlers import admin, user, moderation, super_admin, survey_admin, survey_user
+from handlers import user_myposts
 
 
 def setup_logging():
@@ -84,6 +85,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(moderation.router)
     dp.include_router(user.router)
+    dp.include_router(user_myposts.router)
 
     # Guruh/kanalga qo'shilganda owner avtomatik ro'yxatga olinadi
     from handlers.membership import router as membership_router

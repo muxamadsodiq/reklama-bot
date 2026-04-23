@@ -186,8 +186,8 @@ button { font: inherit; cursor: pointer; border: 0; background: none; color: inh
   gap: 10px;
   padding: 10px 12px;
 }
-@media (min-width: 600px) { .ads-list { grid-template-columns: repeat(3, 1fr); } }
-@media (min-width: 900px) { .ads-list { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 600px) { .ads-list { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 900px) { .ads-list { grid-template-columns: 1fr 1fr; } }
 .card {
   display: flex; flex-direction: column;
   gap: 6px;
@@ -464,3 +464,22 @@ mark {
   background: linear-gradient(135deg, #f1c40f, #e67e22); color: #fff !important;
   font-weight: 700; padding: 12px; margin-top: 6px;
 }
+
+/* REJA10: Aloqa + To'liq ma'lumot — 2 tugmali CTA qator */
+.detail-cta-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  margin-bottom: 8px;
+}
+.detail-cta-row .primary-btn { margin: 0; }
+@media (max-width: 360px) {
+  .detail-cta-row { grid-template-columns: 1fr; }
+}
+.fullinfo-btn { background: var(--btn, #2481cc); color: #fff; }
+.fullinfo-btn.ok { background: #1fa463; }
+.sold-badge {
+  display: inline-block; background: #e53935; color: #fff;
+  padding: 6px 14px; border-radius: 8px; font-weight: 700;
+  font-size: 14px; margin: 8px 12px 4px; letter-spacing: 0.5px;
+}
+.card.sold { opacity: 0.72; }
+.card.sold .card-title::before { content: "🏷 "; }

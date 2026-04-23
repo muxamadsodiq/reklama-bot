@@ -337,6 +337,7 @@ async def ch_view(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔘 Aloqa tugmasi", callback_data=f"own:btn:{ch_id}")],
         [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
+        [InlineKeyboardButton(text="🎯 Aloqa/Sotildi sozlamalari", callback_data=f"own:r10:{ch_id}")],
         [InlineKeyboardButton(text="✏️ Nomini/chat_id tahrirlash", callback_data=f"own:edit:{ch_id}")],
         [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"own:del:{ch_id}")],
         [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="own:list")],
@@ -1352,3 +1353,206 @@ async def _btn_finalize(msg: Message, state: FSMContext):
         f"💎 Premium URL: {final_premium or '—'}",
         parse_mode="HTML",
     )
+
+
+# ============================================================
+# REJA10: Aloqa field + Sotildi field/replacement sozlamalari
+# ============================================================
+
+class R10State(StatesGroup):
+    sold_replacement = State()
+
+
+def _tpl_get(tpl, key, default=None):
+    try:
+        v = tpl[key]
+        return v if v is not None else default
+    except (KeyError, IndexError):
+        return default
+
+
+async def _r10_render(cb_or_msg, ch_id: int, bot=None):
+    tpl = await db.get_template(ch_id)
+    fields = await db.list_fields(ch_id)
+    contact_key = _tpl_get(tpl, "contact_field_key") if tpl else None
+    sold_key = _tpl_get(tpl, "sold_field_key") if tpl else None
+    sold_repl = _tpl_get(tpl, "sold_replacement") if tpl else None
+
+    def _label(k):
+        if not k:
+            return "belgilanmagan"
+        for f in fields:
+            if f["key"] == k:
+                return f"«{f['question']}» ({k})"
+        return f"{k} (maydon topilmadi)"
+
+    text = (
+        "🎯 <b>Aloqa / Sotildi sozlamalari</b>\n\n"
+        "📞 <b>Aloqa maydoni</b> — WebApp'da «Aloqa» tugmasi bosilganda "
+        "shu maydon qiymati DM qilinadi.\n"
+        f"   Hozir: <b>{_label(contact_key)}</b>\n\n"
+        "🏷 <b>Sotildi maydoni</b> — user «Sotildi» bosganda shu maydon "
+        "qiymati o'zgartiriladi.\n"
+        f"   Hozir: <b>{_label(sold_key)}</b>\n\n"
+        "✏️ <b>Sotildi qiymati</b> — yangi qiymat (masalan «SOTILDI»).\n"
+        f"   Hozir: <b>{sold_repl or 'belgilanmagan'}</b>"
+    )
+
+    kb_rows = [
+        [InlineKeyboardButton(text="📞 Aloqa maydonini tanlash", callback_data=f"own:r10c:{ch_id}")],
+        [InlineKeyboardButton(text="🏷 Sotildi maydonini tanlash", callback_data=f"own:r10s:{ch_id}")],
+        [InlineKeyboardButton(text="✏️ Sotildi qiymatini o'zgartirish", callback_data=f"own:r10v:{ch_id}")],
+        [InlineKeyboardButton(text="⬅️ Kanal menyusi", callback_data=f"own:ch:{ch_id}")],
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    target = cb_or_msg.message if isinstance(cb_or_msg, CallbackQuery) else cb_or_msg
+    try:
+        await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await target.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("own:r10:"))
+async def r10_home(cb: CallbackQuery, state: FSMContext):
+    ch_id = int(cb.data.split(":")[2])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    await state.clear()
+    await _r10_render(cb, ch_id)
+    await cb.answer()
+
+
+async def _r10_pick_field(cb: CallbackQuery, ch_id: int, kind: str):
+    """kind: 'c' contact | 's' sold"""
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    fields = await db.list_fields(ch_id)
+    if not fields:
+        await cb.answer("Avval maydonlar qo'shing (Default shablon)", show_alert=True)
+        return
+    title = "📞 Aloqa maydonini tanlang" if kind == "c" else "🏷 Sotildi maydonini tanlang"
+    kb_rows = []
+    for f in fields:
+        kb_rows.append([InlineKeyboardButton(
+            text=f"{f['question']} ({{{f['key']}}})",
+            callback_data=f"own:r10set:{kind}:{ch_id}:{f['id']}"
+        )])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"own:r10:{ch_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    try:
+        await cb.message.edit_text(title, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(title, reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("own:r10c:"))
+async def r10_pick_contact(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    await _r10_pick_field(cb, ch_id, "c")
+
+
+@router.callback_query(F.data.startswith("own:r10s:"))
+async def r10_pick_sold(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    await _r10_pick_field(cb, ch_id, "s")
+
+
+@router.callback_query(F.data.startswith("own:r10set:"))
+async def r10_set_field(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    # own:r10set:<kind>:<ch_id>:<field_id>
+    kind = parts[2]
+    ch_id = int(parts[3])
+    field_id = int(parts[4])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    fields = await db.list_fields(ch_id)
+    target_field = next((f for f in fields if f["id"] == field_id), None)
+    if not target_field:
+        await cb.answer("❌ Maydon topilmadi", show_alert=True)
+        return
+
+    tpl = await db.get_template(ch_id) or {}
+    new_contact = _tpl_get(tpl, "contact_field_key")
+    new_sold = _tpl_get(tpl, "sold_field_key")
+    if kind == "c":
+        new_contact = target_field["key"]
+    else:
+        new_sold = target_field["key"]
+
+    await db.upsert_template(
+        channel_id=ch_id,
+        text_template=_tpl_get(tpl, "text_template", "") or "",
+        button_label=_tpl_get(tpl, "button_label"),
+        button_caption=_tpl_get(tpl, "button_caption"),
+        button_url=_tpl_get(tpl, "button_url"),
+        button_url_by_user=bool(_tpl_get(tpl, "button_url_by_user", 0)),
+        media_required=bool(_tpl_get(tpl, "media_required", 0)),
+        private_chat_id=_tpl_get(tpl, "private_chat_id"),
+        private_text_template=_tpl_get(tpl, "private_text_template"),
+        id_prefix=_tpl_get(tpl, "id_prefix", "_") or "_",
+        premium_url=_tpl_get(tpl, "premium_url"),
+        contact_field_key=new_contact,
+        sold_field_key=new_sold,
+        sold_replacement=_tpl_get(tpl, "sold_replacement"),
+    )
+    await cb.answer("✅ Saqlandi", show_alert=False)
+    await _r10_render(cb, ch_id)
+
+
+@router.callback_query(F.data.startswith("own:r10v:"))
+async def r10_ask_replacement(cb: CallbackQuery, state: FSMContext):
+    ch_id = int(cb.data.split(":")[2])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    await state.set_state(R10State.sold_replacement)
+    await state.update_data(r10_ch_id=ch_id)
+    await cb.message.answer(
+        "✏️ Sotildi holatida maydon qiymati nimaga almashsin?\n"
+        "Masalan: <b>SOTILDI</b> yoki <b>Band qilingan</b>\n\n"
+        "Matnni yuboring yoki /cancel",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+
+@router.message(R10State.sold_replacement)
+async def r10_save_replacement(msg: Message, state: FSMContext):
+    text = (msg.text or "").strip()
+    if text.lower() in ("/cancel", "cancel", "bekor"):
+        await state.clear()
+        await msg.answer("❌ Bekor qilindi")
+        return
+    if not text or len(text) > 120:
+        await msg.answer("⚠️ 1–120 belgi oralig'ida matn yuboring")
+        return
+    data = await state.get_data()
+    ch_id = data.get("r10_ch_id")
+    await state.clear()
+    if not ch_id:
+        await msg.answer("❌ Xato: kanal aniqlanmadi")
+        return
+    tpl = await db.get_template(ch_id) or {}
+    await db.upsert_template(
+        channel_id=ch_id,
+        text_template=_tpl_get(tpl, "text_template", "") or "",
+        button_label=_tpl_get(tpl, "button_label"),
+        button_caption=_tpl_get(tpl, "button_caption"),
+        button_url=_tpl_get(tpl, "button_url"),
+        button_url_by_user=bool(_tpl_get(tpl, "button_url_by_user", 0)),
+        media_required=bool(_tpl_get(tpl, "media_required", 0)),
+        private_chat_id=_tpl_get(tpl, "private_chat_id"),
+        private_text_template=_tpl_get(tpl, "private_text_template"),
+        id_prefix=_tpl_get(tpl, "id_prefix", "_") or "_",
+        premium_url=_tpl_get(tpl, "premium_url"),
+        contact_field_key=_tpl_get(tpl, "contact_field_key"),
+        sold_field_key=_tpl_get(tpl, "sold_field_key"),
+        sold_replacement=text,
+    )
+    await msg.answer(f"✅ Saqlandi: <b>{text}</b>", parse_mode="HTML")
+    await _r10_render(msg, ch_id)

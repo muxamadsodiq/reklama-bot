@@ -45,7 +45,13 @@ async def main_menu_kb(user_id: int | None = None):
     rows = [
         [InlineKeyboardButton(text="📢 Reklama berish", callback_data="u:new")],
         [InlineKeyboardButton(text="🛍 E'lonlarni ko'rish (Mini App)", web_app=WebAppInfo(url=webapp_url))],
+        [InlineKeyboardButton(text="📋 Postlarim", callback_data="u:myposts")],
     ]
+    # REJA11: Adminga yozish (super admin sozlaydi)
+    ac_label = (await db.get_setting("admin_contact_label")) or "✍️ Adminga yozish"
+    ac_url = (await db.get_setting("admin_contact_url")) or ""
+    if ac_url:
+        rows.append([InlineKeyboardButton(text=ac_label, url=ac_url)])
     if user_id is not None and await is_admin_or_super(user_id):
         rows.append([InlineKeyboardButton(text="🧩 Kanal egasi paneli", callback_data="u:owner")])
     if user_id is not None and user_id in SUPER_ADMIN_IDS:

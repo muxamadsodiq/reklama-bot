@@ -396,9 +396,15 @@ function renderDetail(d) {
 
   // REJA9: seller/owner info HIDDEN from public view — only visible to
   // private-group members via /api/contact response (private_text_template)
-  // REJA9: contact button (premium gating) — primary CTA
+  // REJA10: Aloqa + To'liq ma'lumot — ikkalasi ham premium-gated
   const btnLabel = escapeHtml(d.button_label || "📞 Aloqa");
   const contactBtn = `<button class="primary-btn contact-btn" id="detailContactBtn" data-ad-id="${d.id}">${btnLabel}</button>`;
+  const fullInfoBtn = d.has_full_info
+    ? `<button class="primary-btn fullinfo-btn" id="detailFullInfoBtn" data-ad-id="${d.id}">📄 To'liq ma'lumot</button>`
+    : '';
+  // REJA10 fix: SOTILDI badge'ni public/card'dan olib tashlaymiz (faqat maxfiy
+  // guruh a'zolari Aloqa/To'liq ma'lumot bosgach asl post'da SOTILDI ko'radi)
+  const soldBadge = '';
 
   // Public post matni admin template asosida (kanalga chiqqan post bilan
   // aynan bir xil). Agar public_text bor bo'lsa — sarlavha/narx/maydonlarni
@@ -429,11 +435,15 @@ function renderDetail(d) {
        ${fields ? `<div class="detail-fields">${fields}</div>` : ''}`;
 
   els.detailContent.innerHTML = `
+    ${soldBadge}
     ${headHtml}
     ${slides ? `<div class="slider">${slides}</div>` : ''}
     ${publicBlock}
     <div class="detail-actions">
-      ${contactBtn}
+      <div class="detail-cta-row">
+        ${contactBtn}
+        ${fullInfoBtn}
+      </div>
       <div id="contactResult" class="contact-result"></div>
       <button class="secondary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
       <button class="secondary-btn" id="detailShareBtn" data-ad-id="${d.id}">🔗 Ulashish</button>
@@ -441,9 +451,11 @@ function renderDetail(d) {
     </div>
   `;
   setupImgObserver();
-  // REJA9: wire up contact button
+  // REJA9/10: wire up buttons
   const cbtn = document.getElementById('detailContactBtn');
   if (cbtn) cbtn.addEventListener('click', () => handleContact(d.id));
+  const fbtn = document.getElementById('detailFullInfoBtn');
+  if (fbtn) fbtn.addEventListener('click', () => handleFullInfo(d.id));
 }
 
 // REJA9: premium-gated contact
@@ -456,7 +468,7 @@ async function handleContact(adId) {
     const tg = window.Telegram?.WebApp;
     const initData = tg?.initData || '';
     const userId = tg?.initDataUnsafe?.user?.id || null;
-    const res = await fetch(`/api/contact/${adId}`, {
+    const res = await fetch(`${API}/contact/${adId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({init_data: initData, user_id: userId}),
@@ -498,6 +510,45 @@ function parsePrice(s) {
   if (!m) return null;
   const n = parseInt(m[1].replace(/[\s.,]/g, ''));
   return isNaN(n) ? null : n;
+}
+
+// REJA10: To'liq ma'lumot (maxfiy guruh postini DM orqali yuborish)
+async function handleFullInfo(adId) {
+  const resultEl = document.getElementById('contactResult');
+  const btn = document.getElementById('detailFullInfoBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Tekshirilmoqda…'; }
+  if (resultEl) resultEl.innerHTML = '';
+  try {
+    const tg = window.Telegram?.WebApp;
+    const initData = tg?.initData || '';
+    const userId = tg?.initDataUnsafe?.user?.id || null;
+    const res = await fetch(`${API}/full-info/${adId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({init_data: initData, user_id: userId}),
+    });
+    const data = await res.json();
+    if (data.ok && data.sent) {
+      if (btn) { btn.textContent = "✅ To'liq ma'lumot yuborildi"; btn.classList.add('ok'); }
+      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">📩 To'liq post shaxsiy xabarda yuborildi. Botga o'ting.</div>`;
+    } else {
+      const purl = data.premium_url || '';
+      if (btn) { btn.disabled = false; btn.textContent = "📄 To'liq ma'lumot"; }
+      if (resultEl) {
+        const warnMsg = escapeHtml(data.message || "Siz premium obunachi emassiz");
+        if (purl) {
+          resultEl.innerHTML = `
+            <div class="contact-warn">❌ ${warnMsg}. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
+            <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
+        } else {
+          resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
+        }
+      }
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = "📄 To'liq ma'lumot"; }
+    if (resultEl) resultEl.innerHTML = `<div class="contact-warn">Xatolik: ${escapeHtml(String(e))}</div>`;
+  }
 }
 
 // ---------- Seller profile ----------
