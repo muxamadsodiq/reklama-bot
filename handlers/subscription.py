@@ -56,35 +56,61 @@ async def _is_premium_member(bot: Bot, user_id: int, private_chat_id) -> bool:
 
 
 async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> bool:
-    """Premium a'zoga to'liq to'ldirilgan post matnini yuboradi.
+    """Premium a'zoga — faqat admin belgilagan maxfiy maydonlar qiymatini yuboradi
+    (masalan: telefon, telegram username). Butun post emas.
     Qaytaradi: True — yuborildi, False — xatolik/topilmadi.
     """
     try:
         ad = await db.get_ad_full(ad_id)
         if not ad:
             return False
-        tpl = await db.get_template(ch_id)
-        if not tpl:
+        # Shablondan maxfiy maydon kalitlarini olamiz
+        async with aiosqlite.connect(DB_PATH) as dbx:
+            dbx.row_factory = aiosqlite.Row
+            cur = await dbx.execute(
+                "SELECT contact_field_key, telegram_field_key FROM templates WHERE channel_id=?",
+                (ch_id,),
+            )
+            trow = await cur.fetchone()
+        if not trow:
             return False
+        contact_key = (trow["contact_field_key"] or "").strip()
+        tg_key = (trow["telegram_field_key"] or "").strip()
         try:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
             filled = {}
-        text, _kb = build_text_and_kb(
-            tpl, filled, None, ad_id=ad_id, prefix=None,
-            bot_username=None, channel_id=ch_id,
-        )
-        # Media bor bo'lsa media bilan yuboramiz
-        mtype = ad["media_type"] or ""
-        mfid = ad["media_file_id"] or ""
-        header = "💎 <b>Premium ko'rinish</b> (to'liq ma'lumot):\n\n"
-        final_text = header + text
-        if mtype == "photo" and mfid:
-            await bot.send_photo(chat_id, mfid, caption=final_text[:1024], parse_mode="HTML")
-        elif mtype == "video" and mfid:
-            await bot.send_video(chat_id, mfid, caption=final_text[:1024], parse_mode="HTML")
-        else:
-            await bot.send_message(chat_id, final_text, parse_mode="HTML", disable_web_page_preview=True)
+
+        lines = ["💎 <b>Premium ma'lumot</b>\n"]
+        # Telefon / aloqa
+        contact_val = ""
+        if contact_key and filled.get(contact_key):
+            contact_val = str(filled.get(contact_key) or "").strip()
+        if not contact_val:
+            for k in ("phone", "telefon", "contact", "tel", "nomer"):
+                if filled.get(k):
+                    contact_val = str(filled[k]).strip()
+                    break
+        if contact_val:
+            lines.append(f"📞 <b>Telefon:</b> <code>{contact_val}</code>")
+
+        # Telegram username
+        tg_val = ""
+        if tg_key and filled.get(tg_key):
+            tg_val = str(filled.get(tg_key) or "").strip()
+        if tg_val:
+            if tg_val.startswith("http"):
+                lines.append(f"✈️ <b>Telegram:</b> {tg_val}")
+            else:
+                uname = tg_val.lstrip("@").lstrip("/")
+                lines.append(f"✈️ <b>Telegram:</b> @{uname} (https://t.me/{uname})")
+
+        if len(lines) == 1:
+            # Hech narsa topilmadi
+            lines.append("<i>Bu postda maxfiy ma'lumot yo'q.</i>")
+
+        lines.append(f"\n🆔 Post: #{ad_id}")
+        await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
         return True
     except Exception:
         log.exception("send_full_post failed")
