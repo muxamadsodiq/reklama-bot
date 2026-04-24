@@ -1,0 +1,38 @@
+# REJA14 — Ommaviy post tagidagi "Maxsus tugma"
+
+## Maqsad
+Admin shablon yaratganda, oxirida so'raladi: "Maxsus tugma qo'shasizmi?"
+- Ha → tugma matni + qaysi {o'zgaruvchi}(lar)ni tekshirishni tanlaydi
+- Yo'q → tugmasiz post
+
+## Oqim (tugma bosilganda)
+1. Tanlangan {o'zgaruvchi}lar HAMMASI bo'shmi?
+   → empty_placeholder yubor → tugadi
+2. User maxfiy guruh a'zosimi?
+   → Ha → qiymatlarni yubor (labelsiz, har biri yangi qatorda)
+   → Yo'q → sub_offer_text + "Obuna bo'lish" tugmasi (kanalga yoki botga deep-link)
+
+## DB o'zgarishlar
+- `templates.public_btn_keys TEXT DEFAULT ''` — CSV (masalan: `phone,telegram`)
+- `sub_btn_label` → public tugma label'i sifatida ishlatiladi (qayta ishlatish)
+- `empty_placeholder` — mavjud (REJA13b)
+
+## Fayllar
+1. `database.py` — migration public_btn_keys
+2. `handlers/admin.py` — MakeTemplate FSM'ga 3 bosqich:
+   - `ask_pub_btn` (Ha / Yo'q tugmalari)
+   - `pub_btn_label` (matn kiritiladi)
+   - `pub_btn_keys` (checkbox UI — shablondagi {...}lardan tanlash)
+   + Kanal sozlamalari menyusida "🔘 Maxsus tugma" tahrir
+3. `utils/preview_builder.py` — sub_btn_label bo'lsa tugma chiqaradi (hozirda bor, o'zgarmaydi)
+4. `handlers/subscription.py` — `_send_full_post`: public_btn_keys CSV'dan o'qib, hammasi bo'sh bo'lsa empty_placeholder, aks holda qiymatlar
+
+## Callback'lar
+- `tpl:pubbtn:yes` / `tpl:pubbtn:no`
+- `tpl:pubkey:toggle:<key>`
+- `tpl:pubkey:done`
+
+## Test tartibi
+1. Test serverda (`reklamabot-test`) kod
+2. User test qiladi
+3. Prod'ga rsync

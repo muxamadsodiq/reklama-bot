@@ -89,6 +89,9 @@ async def init_db():
             await db.execute("ALTER TABLE templates ADD COLUMN private_invite_link TEXT DEFAULT ''")
         if "empty_placeholder" not in tcols:
             await db.execute("ALTER TABLE templates ADD COLUMN empty_placeholder TEXT DEFAULT ''")
+        # REJA14: ommaviy post tagidagi maxsus tugma — qaysi {key}lar tekshiriladi
+        if "public_btn_keys" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN public_btn_keys TEXT DEFAULT ''")
         # REJA13: premium_requests jadvali
         await db.execute("""
             CREATE TABLE IF NOT EXISTS premium_requests (

@@ -9,7 +9,7 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 import json
-
+import aiosqlite
 import database as db
 from config import SUPER_ADMIN_IDS
 from utils.template_parser import extract_placeholders
@@ -74,6 +74,10 @@ class MakeTemplate(StatesGroup):
     extra_key = State()        # yangi {key} nomi
     extra_where = State()      # qayerga (public/private)
     id_prefix = State()        # #<prefix>0001
+    # REJA14: maxsus tugma
+    pub_btn_choice = State()   # Ha/Yo'q
+    pub_btn_label = State()    # tugma matni
+    pub_btn_keys = State()     # checkbox — qaysi {key}lar tekshirilsin
     confirm = State()
 
 
@@ -999,7 +1003,119 @@ async def id_prefix_input(msg: Message, state: FSMContext):
             await msg.answer("❌ Juda uzun. Maks 10 ta belgi. Qayta:")
             return
     await state.update_data(id_prefix=prefix)
-    await _finalize_template(msg, state)
+    await _ask_pub_btn(msg, state)
+
+
+# ========== REJA14: Maxsus tugma (ommaviy post tagidagi) ==========
+async def _ask_pub_btn(msg: Message, state: FSMContext):
+    await state.set_state(MakeTemplate.pub_btn_choice)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Ha, qo'shaman", callback_data="tpl:pubbtn:yes"),
+         InlineKeyboardButton(text="⏭ Yo'q", callback_data="tpl:pubbtn:no")],
+    ])
+    await msg.answer(
+        "🔘 <b>Maxsus tugma qo'shasizmi?</b>\n\n"
+        "Bu tugma reklama postining tagida turadi.\n"
+        "Bosgan odamga:\n"
+        "• Maxfiy guruh a'zosi bo'lsa → siz tanlagan maydon qiymat(lari)ni ko'rsatadi\n"
+        "• A'zo bo'lmasa → obuna taklifini ko'rsatadi\n\n"
+        "Agar tanlangan maydon qiymatlari bo'sh bo'lsa — \"Bo'sh maydon matni\" chiqadi.",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(MakeTemplate.pub_btn_choice, F.data == "tpl:pubbtn:no")
+async def pub_btn_no(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(pub_btn_label="", pub_btn_keys="")
+    await cb.message.edit_text("⏭ Maxsus tugma qo'shilmadi.")
+    await _finalize_template(cb.message, state)
+    await cb.answer()
+
+
+@router.callback_query(MakeTemplate.pub_btn_choice, F.data == "tpl:pubbtn:yes")
+async def pub_btn_yes(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(MakeTemplate.pub_btn_label)
+    await cb.message.edit_text(
+        "🔘 <b>Tugma matnini yozing</b>\n\n"
+        "Masalan: <code>📞 Aloqa</code>, <code>Batafsil</code>, <code>Ko'rish</code>\n\n"
+        "Maks 64 ta belgi."
+    )
+    await cb.answer()
+
+
+@router.message(MakeTemplate.pub_btn_label)
+async def pub_btn_label_input(msg: Message, state: FSMContext):
+    label = (msg.text or "").strip()
+    if not label:
+        await msg.answer("❌ Bo'sh bo'lmasin. Qayta yozing:")
+        return
+    if len(label) > 64:
+        await msg.answer("❌ Juda uzun (maks 64 belgi). Qayta:")
+        return
+    await state.update_data(pub_btn_label=label)
+    # Shablon matnidan {key}larni olib, checkbox ro'yxatini chiqar
+    data = await state.get_data()
+    import re
+    keys = list(dict.fromkeys(re.findall(r"\{([a-zA-Z0-9_]+)\}", data.get("text", ""))))
+    # ad_id ichki — tashlab ketamiz
+    keys = [k for k in keys if k != "ad_id"]
+    if not keys:
+        await msg.answer("⚠️ Shablon matnida hech qanday {o'zgaruvchi} topilmadi. Tugmasiz davom etamiz.")
+        await state.update_data(pub_btn_label="", pub_btn_keys="")
+        await _finalize_template(msg, state)
+        return
+    await state.update_data(pub_btn_all_keys=keys, pub_btn_selected=[])
+    await state.set_state(MakeTemplate.pub_btn_keys)
+    await msg.answer(
+        "🔑 <b>Qaysi maydon(lar)ni tekshirish kerak?</b>\n\n"
+        "Bosing — tanlaydi/bekor qiladi.\n"
+        "Barchasi bo'sh bo'lsa — \"Bo'sh maydon matni\" chiqadi.",
+        reply_markup=_pub_keys_kb(keys, []),
+    )
+
+
+def _pub_keys_kb(all_keys: list[str], selected: list[str]) -> InlineKeyboardMarkup:
+    rows = []
+    for k in all_keys:
+        mark = "✅" if k in selected else "⬜"
+        rows.append([InlineKeyboardButton(text=f"{mark} {{{k}}}", callback_data=f"tpl:pubkey:t:{k}")])
+    rows.append([InlineKeyboardButton(text="💾 Saqlash", callback_data="tpl:pubkey:done")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(MakeTemplate.pub_btn_keys, F.data.startswith("tpl:pubkey:t:"))
+async def pub_key_toggle(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":", 3)[3]
+    d = await state.get_data()
+    sel = list(d.get("pub_btn_selected") or [])
+    all_keys = list(d.get("pub_btn_all_keys") or [])
+    if key in sel:
+        sel.remove(key)
+    else:
+        sel.append(key)
+    await state.update_data(pub_btn_selected=sel)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_pub_keys_kb(all_keys, sel))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(MakeTemplate.pub_btn_keys, F.data == "tpl:pubkey:done")
+async def pub_key_done(cb: CallbackQuery, state: FSMContext):
+    d = await state.get_data()
+    sel = list(d.get("pub_btn_selected") or [])
+    if not sel:
+        await cb.answer("⚠️ Kamida 1 ta maydon tanlang", show_alert=True)
+        return
+    await state.update_data(pub_btn_keys=",".join(sel))
+    await cb.message.edit_text(
+        f"✅ Maxsus tugma saqlandi:\n"
+        f"• Matn: {d.get('pub_btn_label')}\n"
+        f"• Maydonlar: {', '.join('{'+k+'}' for k in sel)}"
+    )
+    await _finalize_template(cb.message, state)
+    await cb.answer()
 
 
 async def _finalize_template(msg: Message, state: FSMContext):
@@ -1017,14 +1133,30 @@ async def _finalize_template(msg: Message, state: FSMContext):
         id_prefix=data.get("id_prefix", "_"),
     )
     await db.replace_fields(data["ch_id"], data.get("fields", []))
+    # REJA14: Maxsus tugma label + keys (sub_btn_label va public_btn_keys)
+    pub_label = data.get("pub_btn_label") or ""
+    pub_keys = data.get("pub_btn_keys") or ""
+    try:
+        async with aiosqlite.connect(db.DB_PATH) as _dbx:
+            await _dbx.execute(
+                "UPDATE templates SET sub_btn_label=?, public_btn_keys=? WHERE channel_id=?",
+                (pub_label, pub_keys, data["ch_id"]),
+            )
+            await _dbx.commit()
+    except Exception as e:
+        log.warning(f"pub btn save failed: {e}")
     await state.clear()
     bot = msg.bot
     sample_prefix = data.get("id_prefix", "_")
+    pub_info = ""
+    if pub_label:
+        pub_info = f"\n• Maxsus tugma: «{pub_label}» ({pub_keys})"
     await msg.answer(
         "✅ Shablon saqlandi!\n\n"
         f"• Maydonlar: {len(data.get('fields', []))} ta\n"
         f"• Maxfiy guruh: {'bor' if data.get('priv_chat_id') else 'yo`q'}\n"
-        f"• ID format: #{sample_prefix}0001",
+        f"• ID format: #{sample_prefix}0001"
+        f"{pub_info}",
         reply_markup=await owner_menu_kb(bot),
     )
 

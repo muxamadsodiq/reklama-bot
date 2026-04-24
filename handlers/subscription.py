@@ -56,50 +56,57 @@ async def _is_premium_member(bot: Bot, user_id: int, private_chat_id) -> bool:
 
 
 async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> bool:
-    """Premium a'zoga — faqat admin belgilagan maxfiy maydonlar qiymatini yuboradi
-    (masalan: telefon, telegram username). Butun post emas.
-    Qaytaradi: True — yuborildi, False — xatolik/topilmadi.
+    """Premium a'zoga — admin shablon yaratishda tanlagan maydon(lar) qiymatini yuboradi.
+    Agar public_btn_keys (CSV) o'rnatilgan bo'lsa — shular.
+    Aks holda fallback: contact_field_key + telegram_field_key.
     """
     try:
         ad = await db.get_ad_full(ad_id)
         if not ad:
             return False
-        # Shablondan maxfiy maydon kalitlarini olamiz
         async with aiosqlite.connect(DB_PATH) as dbx:
             dbx.row_factory = aiosqlite.Row
             cur = await dbx.execute(
-                "SELECT contact_field_key, telegram_field_key FROM templates WHERE channel_id=?",
+                "SELECT contact_field_key, telegram_field_key, public_btn_keys FROM templates WHERE channel_id=?",
                 (ch_id,),
             )
             trow = await cur.fetchone()
         if not trow:
             return False
-        contact_key = (trow["contact_field_key"] or "").strip()
-        tg_key = (trow["telegram_field_key"] or "").strip()
         try:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
             filled = {}
 
-        lines = []
-        # Telefon / aloqa — faqat qiymat
-        contact_val = ""
-        if contact_key and filled.get(contact_key):
-            contact_val = str(filled.get(contact_key) or "").strip()
-        if not contact_val:
-            for k in ("phone", "telefon", "contact", "tel", "nomer"):
-                if filled.get(k):
-                    contact_val = str(filled[k]).strip()
-                    break
-        if contact_val:
-            lines.append(contact_val)
+        # REJA14: yangi — public_btn_keys CSV bo'yicha
+        pub_csv = ""
+        try:
+            pub_csv = (trow["public_btn_keys"] or "").strip()
+        except (KeyError, IndexError):
+            pub_csv = ""
 
-        # Telegram — faqat qiymat
-        tg_val = ""
-        if tg_key and filled.get(tg_key):
-            tg_val = str(filled.get(tg_key) or "").strip()
-        if tg_val:
-            lines.append(tg_val)
+        keys_to_show: list[str] = []
+        if pub_csv:
+            keys_to_show = [k.strip() for k in pub_csv.split(",") if k.strip()]
+        else:
+            # fallback — eski contact/telegram_field_key
+            contact_key = (trow["contact_field_key"] or "").strip()
+            tg_key = (trow["telegram_field_key"] or "").strip()
+            if contact_key:
+                keys_to_show.append(contact_key)
+            if tg_key:
+                keys_to_show.append(tg_key)
+            if not keys_to_show:
+                for k in ("phone", "telefon", "contact", "tel", "nomer"):
+                    if filled.get(k):
+                        keys_to_show.append(k)
+                        break
+
+        lines = []
+        for k in keys_to_show:
+            v = str(filled.get(k, "") or "").strip()
+            if v:
+                lines.append(v)
 
         if not lines:
             return False
@@ -112,8 +119,8 @@ async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> boo
 
 
 async def _post_is_sold_or_empty(ad_id: int, ch_id: int) -> bool:
-    """Post sotilganmi (sold_at) yoki barcha asosiy {} bo'shmi — shunda premium tekshirish kerak emas,
-    hammaga empty_placeholder chiqadi."""
+    """Post sotilganmi (sold_at) yoki tanlangan public_btn_keys barcha qiymatlari bo'shmi.
+    Agar public_btn_keys o'rnatilmagan bo'lsa — eski logika (butun text_template keylar)."""
     try:
         ad = await db.get_ad_full(ad_id)
         if not ad:
@@ -127,10 +134,19 @@ async def _post_is_sold_or_empty(ad_id: int, ch_id: int) -> bool:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
             filled = {}
-        # Agar text_template'dagi barcha placeholder qiymatlari bo'sh bo'lsa → sotilgan/ochirilgan
+        # REJA14: public_btn_keys bor bo'lsa, faqat shu keylar bo'yicha tekshir
+        pub_csv = ""
+        try:
+            pub_csv = (tpl["public_btn_keys"] or "").strip()
+        except (KeyError, IndexError):
+            pub_csv = ""
+        if pub_csv:
+            pub_keys = [k.strip() for k in pub_csv.split(",") if k.strip()]
+            has_any = any((str(filled.get(k, "")).strip()) for k in pub_keys)
+            return not has_any
+        # Fallback — eski logika
         from utils.template_parser import extract_placeholders
         keys = extract_placeholders(tpl["text_template"] or "")
-        # Faqat user-data maydonlarni sanaymiz (ad_id kabi sistem emas)
         user_keys = [k for k in keys if k not in ("ad_id",)]
         if not user_keys:
             return False
