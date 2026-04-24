@@ -203,19 +203,9 @@ async def _apply_sold(ad, bot: Bot) -> tuple[bool, str]:
         except (KeyError, IndexError):
             return d
 
-    sold_key = _g("sold_field_key")
-    sold_repl = _g("sold_replacement") or "🔴 SOTILDI"
     filled = _parse_filled(ad)
-    if sold_key:
-        filled[sold_key] = sold_repl
-    else:
-        # fallback: title/nomi ga prefix
-        for k in ("title", "nomi", "name"):
-            if k in filled:
-                filled[k] = f"{sold_repl} — {filled[k]}"
-                break
-        else:
-            filled["_status"] = sold_repl
+    from utils.sold_rules import apply_sold
+    filled, _applied = apply_sold(filled, tpl)
 
     new_json = json.dumps(filled, ensure_ascii=False)
     await db.mark_ad_sold(ad["id"], new_json)

@@ -891,24 +891,30 @@ async def field_question(msg: Message, state: FSMContext):
     question = msg.text.strip()
     await state.update_data(_cur_key=key, _cur_q=question)
 
-    # Default public: agar extra bo'lsa default=private, aks holda pub_keys'ga qarab
-    pub_keys = data.get("_pub_keys", [])
-    default_public = key in pub_keys and not data.get("_extra_mode")
-    hint_pub = "KO'RINADI" if default_public else "KO'RINMAYDI"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Public (kanalda ko'rinadi)", callback_data="fld:vis:1")],
-            [InlineKeyboardButton(text="🔒 Maxfiy (faqat maxfiy guruhga)", callback_data="fld:vis:0")],
-        ]
-    )
-    await state.set_state(MakeTemplate.field_visibility)
-    await msg.answer(
-        f"«{{{key}}}» maydoni asosiy kanal/guruhda ko'rinsinmi?\n"
-        f"(Tavsiya: hozir {hint_pub})",
-        reply_markup=kb,
-    )
+    # Visibility bosqichi olib tashlandi — endi ikkita alohida shablon bor
+    # (public + maxfiy), admin shablon matnida qaysi {maydon}ni qayerga qo'yishni
+    # o'zi belgilaydi. Barcha maydonlar show_in_public=1 bilan saqlanadi.
+    data = await state.get_data()
+    fields = list(data.get("fields", []))
+    fields.append({
+        "key": key,
+        "question": question,
+        "show_in_public": True,
+    })
+    update = {"fields": fields}
+    if data.get("_extra_mode"):
+        update["_extra_mode"] = False
+        update["_extra_key"] = None
+        await state.update_data(**update)
+        await _ask_extra(msg, state)
+        return
+    update["field_idx"] = data["field_idx"] + 1
+    await state.update_data(**update)
+    await _ask_field_question(msg, state)
 
 
+# Legacy handler — hech qachon chaqirilmaydi, lekin eski FSM state'lar
+# tozalangunicha xavfsiz bo'lishi uchun qoldirildi.
 @router.callback_query(MakeTemplate.field_visibility, F.data.startswith("fld:vis:"))
 async def field_visibility(cb: CallbackQuery, state: FSMContext):
     show_public = cb.data.endswith("1")
@@ -921,14 +927,12 @@ async def field_visibility(cb: CallbackQuery, state: FSMContext):
     })
     update = {"fields": fields}
     if data.get("_extra_mode"):
-        # extra modedan chiqib, yana _ask_extra ga qaytamiz
         update["_extra_mode"] = False
         update["_extra_key"] = None
         await state.update_data(**update)
         await cb.answer("Qo'shildi")
         await _ask_extra(cb.message, state)
         return
-    # oddiy flow — keyingi key'ga o'tamiz
     update["field_idx"] = data["field_idx"] + 1
     await state.update_data(**update)
     await cb.answer("Saqlandi")
@@ -1361,6 +1365,7 @@ async def _btn_finalize(msg: Message, state: FSMContext):
 
 class R10State(StatesGroup):
     sold_replacement = State()
+    sold_rule_value = State()
 
 
 def _tpl_get(tpl, key, default=None):
@@ -1375,8 +1380,11 @@ async def _r10_render(cb_or_msg, ch_id: int, bot=None):
     tpl = await db.get_template(ch_id)
     fields = await db.list_fields(ch_id)
     contact_key = _tpl_get(tpl, "contact_field_key") if tpl else None
-    sold_key = _tpl_get(tpl, "sold_field_key") if tpl else None
-    sold_repl = _tpl_get(tpl, "sold_replacement") if tpl else None
+    tg_key = _tpl_get(tpl, "telegram_field_key") if tpl else None
+
+    # Parse sold_rules (backward compat)
+    from utils.sold_rules import parse_rules
+    rules = parse_rules(tpl) if tpl else []
 
     def _label(k):
         if not k:
@@ -1386,24 +1394,43 @@ async def _r10_render(cb_or_msg, ch_id: int, bot=None):
                 return f"«{f['question']}» ({k})"
         return f"{k} (maydon topilmadi)"
 
+    rules_txt = ""
+    if rules:
+        for i, r in enumerate(rules, 1):
+            v = r.get("value") or ""
+            v_disp = f"<code>{v}</code>" if v else "<i>(bo'sh — qiymat olib tashlanadi)</i>"
+            rules_txt += f"   {i}. <b>{{{r['key']}}}</b> → {v_disp}\n"
+    else:
+        rules_txt = "   <i>Hali qoidalar yo'q — default: title oldiga 🔴 SOTILDI</i>\n"
+
     text = (
         "🎯 <b>Aloqa / Sotildi sozlamalari</b>\n\n"
         "📞 <b>Aloqa maydoni</b> — WebApp'da «Aloqa» tugmasi bosilganda "
         "shu maydon qiymati DM qilinadi.\n"
         f"   Hozir: <b>{_label(contact_key)}</b>\n\n"
-        "🏷 <b>Sotildi maydoni</b> — user «Sotildi» bosganda shu maydon "
-        "qiymati o'zgartiriladi.\n"
-        f"   Hozir: <b>{_label(sold_key)}</b>\n\n"
-        "✏️ <b>Sotildi qiymati</b> — yangi qiymat (masalan «SOTILDI»).\n"
-        f"   Hozir: <b>{sold_repl or 'belgilanmagan'}</b>"
+        "💬 <b>Telegram maydoni</b> — «Aloqa» link sifatida "
+        "https://t.me/&lt;username&gt; ga yo'naltiradi.\n"
+        f"   Hozir: <b>{_label(tg_key)}</b>\n\n"
+        "🏷 <b>Sotildi qoidalari</b> — user «Sotildi» bosganda "
+        "quyidagi maydonlar qiymati almashtiriladi. Agar qiymat bo'sh bo'lsa, "
+        "shu maydon postdan ko'rinmay qoladi (bo'sh qator).\n\n"
+        f"{rules_txt}"
     )
 
     kb_rows = [
-        [InlineKeyboardButton(text="📞 Aloqa maydonini tanlash", callback_data=f"own:r10c:{ch_id}")],
-        [InlineKeyboardButton(text="🏷 Sotildi maydonini tanlash", callback_data=f"own:r10s:{ch_id}")],
-        [InlineKeyboardButton(text="✏️ Sotildi qiymatini o'zgartirish", callback_data=f"own:r10v:{ch_id}")],
-        [InlineKeyboardButton(text="⬅️ Kanal menyusi", callback_data=f"own:ch:{ch_id}")],
+        [InlineKeyboardButton(text="📞 Aloqa maydoni", callback_data=f"own:r10c:{ch_id}")],
+        [InlineKeyboardButton(text="💬 Telegram maydoni", callback_data=f"own:r10t:{ch_id}")],
+        [InlineKeyboardButton(text="➕ Sotildi qoida qo'shish", callback_data=f"own:srad:{ch_id}")],
     ]
+    for i, r in enumerate(rules):
+        short_v = (r.get("value") or "bo'sh")[:20]
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"🗑 {{{r['key']}}} → {short_v}",
+                callback_data=f"own:srd:{ch_id}:{i}"
+            )
+        ])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Kanal menyusi", callback_data=f"own:ch:{ch_id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     target = cb_or_msg.message if isinstance(cb_or_msg, CallbackQuery) else cb_or_msg
     try:
@@ -1424,7 +1451,7 @@ async def r10_home(cb: CallbackQuery, state: FSMContext):
 
 
 async def _r10_pick_field(cb: CallbackQuery, ch_id: int, kind: str):
-    """kind: 'c' contact | 's' sold"""
+    """kind: 'c' contact | 'sr' sold_rule_add | 't' telegram"""
     ch = await db.get_channel(ch_id)
     if not await _ensure_owner(cb, ch):
         return
@@ -1432,7 +1459,12 @@ async def _r10_pick_field(cb: CallbackQuery, ch_id: int, kind: str):
     if not fields:
         await cb.answer("Avval maydonlar qo'shing (Default shablon)", show_alert=True)
         return
-    title = "📞 Aloqa maydonini tanlang" if kind == "c" else "🏷 Sotildi maydonini tanlang"
+    titles = {
+        "c": "📞 Aloqa maydonini tanlang",
+        "sr": "🏷 Sotildi qoidasi uchun maydonni tanlang",
+        "t": "💬 Telegram maydonini tanlang (username maydoni)",
+    }
+    title = titles.get(kind, "Maydonni tanlang")
     kb_rows = []
     for f in fields:
         kb_rows.append([InlineKeyboardButton(
@@ -1454,14 +1486,43 @@ async def r10_pick_contact(cb: CallbackQuery):
     await _r10_pick_field(cb, ch_id, "c")
 
 
-@router.callback_query(F.data.startswith("own:r10s:"))
-async def r10_pick_sold(cb: CallbackQuery):
+@router.callback_query(F.data.startswith("own:r10t:"))
+async def r10_pick_telegram(cb: CallbackQuery):
     ch_id = int(cb.data.split(":")[2])
-    await _r10_pick_field(cb, ch_id, "s")
+    await _r10_pick_field(cb, ch_id, "t")
+
+
+@router.callback_query(F.data.startswith("own:srad:"))
+async def r10_sold_rule_add(cb: CallbackQuery):
+    ch_id = int(cb.data.split(":")[2])
+    await _r10_pick_field(cb, ch_id, "sr")
+
+
+async def _save_tpl(ch_id, tpl, **overrides):
+    params = dict(
+        channel_id=ch_id,
+        text_template=_tpl_get(tpl, "text_template", "") or "",
+        button_label=_tpl_get(tpl, "button_label"),
+        button_caption=_tpl_get(tpl, "button_caption"),
+        button_url=_tpl_get(tpl, "button_url"),
+        button_url_by_user=bool(_tpl_get(tpl, "button_url_by_user", 0)),
+        media_required=bool(_tpl_get(tpl, "media_required", 0)),
+        private_chat_id=_tpl_get(tpl, "private_chat_id"),
+        private_text_template=_tpl_get(tpl, "private_text_template"),
+        id_prefix=_tpl_get(tpl, "id_prefix", "_") or "_",
+        premium_url=_tpl_get(tpl, "premium_url"),
+        contact_field_key=_tpl_get(tpl, "contact_field_key"),
+        sold_field_key=_tpl_get(tpl, "sold_field_key"),
+        sold_replacement=_tpl_get(tpl, "sold_replacement"),
+        telegram_field_key=_tpl_get(tpl, "telegram_field_key"),
+        sold_rules=_tpl_get(tpl, "sold_rules") or "",
+    )
+    params.update(overrides)
+    await db.upsert_template(**params)
 
 
 @router.callback_query(F.data.startswith("own:r10set:"))
-async def r10_set_field(cb: CallbackQuery):
+async def r10_set_field(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     # own:r10set:<kind>:<ch_id>:<field_id>
     kind = parts[2]
@@ -1477,82 +1538,86 @@ async def r10_set_field(cb: CallbackQuery):
         return
 
     tpl = await db.get_template(ch_id) or {}
-    new_contact = _tpl_get(tpl, "contact_field_key")
-    new_sold = _tpl_get(tpl, "sold_field_key")
     if kind == "c":
-        new_contact = target_field["key"]
-    else:
-        new_sold = target_field["key"]
-
-    await db.upsert_template(
-        channel_id=ch_id,
-        text_template=_tpl_get(tpl, "text_template", "") or "",
-        button_label=_tpl_get(tpl, "button_label"),
-        button_caption=_tpl_get(tpl, "button_caption"),
-        button_url=_tpl_get(tpl, "button_url"),
-        button_url_by_user=bool(_tpl_get(tpl, "button_url_by_user", 0)),
-        media_required=bool(_tpl_get(tpl, "media_required", 0)),
-        private_chat_id=_tpl_get(tpl, "private_chat_id"),
-        private_text_template=_tpl_get(tpl, "private_text_template"),
-        id_prefix=_tpl_get(tpl, "id_prefix", "_") or "_",
-        premium_url=_tpl_get(tpl, "premium_url"),
-        contact_field_key=new_contact,
-        sold_field_key=new_sold,
-        sold_replacement=_tpl_get(tpl, "sold_replacement"),
-    )
-    await cb.answer("✅ Saqlandi", show_alert=False)
-    await _r10_render(cb, ch_id)
+        await _save_tpl(ch_id, tpl, contact_field_key=target_field["key"])
+        await cb.answer("✅ Saqlandi", show_alert=False)
+        await _r10_render(cb, ch_id)
+    elif kind == "t":
+        await _save_tpl(ch_id, tpl, telegram_field_key=target_field["key"])
+        await cb.answer("✅ Saqlandi", show_alert=False)
+        await _r10_render(cb, ch_id)
+    elif kind == "sr":
+        # So'raymiz: qoidani qanday qiymatga almashtirish (bo'sh yuborsa — maydon bo'sh bo'ladi)
+        await state.set_state(R10State.sold_rule_value)
+        await state.update_data(r10_ch_id=ch_id, r10_key=target_field["key"])
+        await cb.message.answer(
+            f"✏️ <b>{{{target_field['key']}}}</b> maydoni «Sotildi» bosilganda nimaga almashsin?\n\n"
+            "• Matn yuboring: masalan <code>TOPSHIRILDI</code>\n"
+            "• <code>-</code> (bitta chiziq) yuborsangiz qiymat <b>bo'sh</b> qoladi "
+            "(ya'ni postda bu maydon ko'rinmaydi)\n"
+            "• /cancel bekor qilish",
+            parse_mode="HTML",
+        )
+        await cb.answer()
 
 
-@router.callback_query(F.data.startswith("own:r10v:"))
-async def r10_ask_replacement(cb: CallbackQuery, state: FSMContext):
-    ch_id = int(cb.data.split(":")[2])
-    ch = await db.get_channel(ch_id)
-    if not await _ensure_owner(cb, ch):
-        return
-    await state.set_state(R10State.sold_replacement)
-    await state.update_data(r10_ch_id=ch_id)
-    await cb.message.answer(
-        "✏️ Sotildi holatida maydon qiymati nimaga almashsin?\n"
-        "Masalan: <b>SOTILDI</b> yoki <b>Band qilingan</b>\n\n"
-        "Matnni yuboring yoki /cancel",
-        parse_mode="HTML",
-    )
-    await cb.answer()
-
-
-@router.message(R10State.sold_replacement)
-async def r10_save_replacement(msg: Message, state: FSMContext):
+@router.message(R10State.sold_rule_value)
+async def r10_sold_rule_save(msg: Message, state: FSMContext):
     text = (msg.text or "").strip()
     if text.lower() in ("/cancel", "cancel", "bekor"):
         await state.clear()
         await msg.answer("❌ Bekor qilindi")
         return
-    if not text or len(text) > 120:
-        await msg.answer("⚠️ 1–120 belgi oralig'ida matn yuboring")
+    if len(text) > 120:
+        await msg.answer("⚠️ 120 belgidan oshmasin")
         return
     data = await state.get_data()
     ch_id = data.get("r10_ch_id")
+    key = data.get("r10_key")
     await state.clear()
-    if not ch_id:
-        await msg.answer("❌ Xato: kanal aniqlanmadi")
+    if not ch_id or not key:
+        await msg.answer("❌ Xato: context yo'qolgan")
+        return
+
+    # "-" → bo'sh qiymat
+    value = "" if text == "-" else text
+
+    tpl = await db.get_template(ch_id) or {}
+    from utils.sold_rules import parse_rules, dump_rules
+    rules = parse_rules(tpl)
+    # Shu key uchun bor qoidani yangilaymiz yoki yangisini qo'shamiz
+    found = False
+    for r in rules:
+        if r["key"] == key:
+            r["value"] = value
+            found = True
+            break
+    if not found:
+        rules.append({"key": key, "value": value})
+
+    await _save_tpl(ch_id, tpl, sold_rules=dump_rules(rules))
+    disp = f"«{value}»" if value else "<i>bo'sh</i>"
+    await msg.answer(f"✅ Qoida saqlandi: <b>{{{key}}}</b> → {disp}", parse_mode="HTML")
+    await _r10_render(msg, ch_id)
+
+
+@router.callback_query(F.data.startswith("own:srd:"))
+async def r10_sold_rule_delete(cb: CallbackQuery):
+    # own:srd:<ch_id>:<index>
+    parts = cb.data.split(":")
+    ch_id = int(parts[2])
+    idx = int(parts[3])
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
         return
     tpl = await db.get_template(ch_id) or {}
-    await db.upsert_template(
-        channel_id=ch_id,
-        text_template=_tpl_get(tpl, "text_template", "") or "",
-        button_label=_tpl_get(tpl, "button_label"),
-        button_caption=_tpl_get(tpl, "button_caption"),
-        button_url=_tpl_get(tpl, "button_url"),
-        button_url_by_user=bool(_tpl_get(tpl, "button_url_by_user", 0)),
-        media_required=bool(_tpl_get(tpl, "media_required", 0)),
-        private_chat_id=_tpl_get(tpl, "private_chat_id"),
-        private_text_template=_tpl_get(tpl, "private_text_template"),
-        id_prefix=_tpl_get(tpl, "id_prefix", "_") or "_",
-        premium_url=_tpl_get(tpl, "premium_url"),
-        contact_field_key=_tpl_get(tpl, "contact_field_key"),
-        sold_field_key=_tpl_get(tpl, "sold_field_key"),
-        sold_replacement=text,
-    )
-    await msg.answer(f"✅ Saqlandi: <b>{text}</b>", parse_mode="HTML")
-    await _r10_render(msg, ch_id)
+    from utils.sold_rules import parse_rules, dump_rules
+    rules = parse_rules(tpl)
+    if 0 <= idx < len(rules):
+        removed = rules.pop(idx)
+        await _save_tpl(ch_id, tpl, sold_rules=dump_rules(rules))
+        await cb.answer(f"🗑 O'chirildi: {{{removed['key']}}}", show_alert=False)
+    else:
+        await cb.answer("Topilmadi", show_alert=True)
+    await _r10_render(cb, ch_id)
+

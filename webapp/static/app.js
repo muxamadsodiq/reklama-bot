@@ -445,7 +445,7 @@ function renderDetail(d) {
         ${fullInfoBtn}
       </div>
       <div id="contactResult" class="contact-result"></div>
-      <button class="secondary-btn" id="detailFavBtn" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
+      <button type="button" class="secondary-btn" id="detailFavBtn" data-fav="${d.id}" data-ad-id="${d.id}">${isFav ? '❤️ Saqlangan' : '🤍 Saqlash'}</button>
       <button class="secondary-btn" id="detailShareBtn" data-ad-id="${d.id}">🔗 Ulashish</button>
       ${d.channel_url ? `<a class="secondary-btn" href="${escapeHtml(d.channel_url)}" target="_blank">📢 Kanalda ochish</a>` : ''}
     </div>
@@ -475,8 +475,21 @@ async function handleContact(adId) {
     });
     const data = await res.json();
     if (data.ok && data.sent) {
-      if (btn) { btn.textContent = '✅ Telegram botga yuborildi'; btn.classList.add('ok'); }
-      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">📩 Tafsilotlar shaxsiy xabarda yuborildi. Botga o'ting.</div>`;
+      if (btn) { btn.textContent = '✅ Aloqa ochildi'; btn.classList.add('ok'); }
+      if (resultEl) {
+        const contact = escapeHtml(data.contact || '');
+        const tel = /^[+\d][\d\s\-()]+$/.test(data.contact || '') ? `tel:${(data.contact||'').replace(/[^+\d]/g,'')}` : '';
+        const tgUrl = data.telegram_url || '';
+        const tgUser = data.telegram_username || '';
+        const tgBtn = tgUrl ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none; background:#229ED9;" href="${escapeHtml(tgUrl)}" target="_blank" rel="noopener">💬 Telegram${tgUser ? ': @'+escapeHtml(tgUser) : ''}</a>` : '';
+        resultEl.innerHTML = `
+          <div class="contact-ok">
+            <div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa:</div>
+            <div style="font-size:20px; font-weight:700; letter-spacing:0.5px;">${contact}</div>
+            ${tel ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none;" href="${tel}">📲 Qo'ng'iroq qilish</a>` : ''}
+            ${tgBtn}
+          </div>`;
+      }
     } else if (data.ok && !data.sent) {
       if (btn) { btn.disabled = false; btn.textContent = '📞 Aloqa'; }
       if (resultEl) resultEl.innerHTML = `<div class="contact-warn">❌ Siz premium obunachi emassiz</div>`;
@@ -759,10 +772,15 @@ document.addEventListener('click', async (e) => {
     const id = parseInt(favBtn.dataset.fav);
     const on = LS.toggleFav(id);
     favBtn.classList.toggle('on', on);
-    favBtn.textContent = on ? '❤️' : '🤍';
+    // Card'dagi kichik tugma uchun emoji; detail'dagi katta tugma uchun to'liq matn
+    if (favBtn.id === 'detailFavBtn') {
+      favBtn.textContent = on ? '❤️ Saqlangan' : '🤍 Saqlash';
+    } else {
+      favBtn.textContent = on ? '❤️' : '🤍';
+    }
     return;
   }
-  const card = e.target.closest('[data-ad-id]');
+  const card = e.target.closest('article.card[data-ad-id], .mini-card[data-ad-id]');
   if (card) {
     loadDetail(parseInt(card.dataset.adId));
     return;
@@ -803,12 +821,6 @@ document.addEventListener('click', async (e) => {
       await api(`/saved_searches/${id}?init_data=${encodeURIComponent(INIT_DATA)}`, { method: 'DELETE' });
       loadSearches();
     } catch (e) { tg?.showAlert?.(e.message); }
-    return;
-  }
-  if (e.target.id === 'detailFavBtn') {
-    const id = parseInt(e.target.dataset.adId);
-    const on = LS.toggleFav(id);
-    e.target.textContent = on ? '❤️ Saqlangan' : '🤍 Saqlash';
     return;
   }
   if (e.target.id === 'detailShareBtn') {

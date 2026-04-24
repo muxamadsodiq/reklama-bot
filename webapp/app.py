@@ -418,7 +418,7 @@ async def api_ad_detail(ad_id: int):
         r = conn.execute(
             """SELECT id, user_id, username, filled_data, media_file_id, media_type,
                       custom_url, created_at, category_id, posted_chat_id, posted_message_id,
-                      view_count, media_list
+                      view_count, media_list, target_channels
                FROM ads WHERE id=? AND status='approved'""",
             (ad_id,),
         ).fetchone()
@@ -471,6 +471,19 @@ async def api_ad_detail(ad_id: int):
                        WHERE c.chat_id=? LIMIT 1""",
                     (str(r["posted_chat_id"]),),
                 ).fetchone()
+            # Fallback: target_channels dan birinchi channel_id (posted_chat_id bo'sh bo'lsa)
+            if not tpl_row:
+                try:
+                    tc = json.loads(r["target_channels"] or "[]")
+                    if tc:
+                        tpl_row = conn.execute(
+                            """SELECT text_template, button_label, private_chat_id,
+                                      private_text_template, premium_url, id_prefix
+                               FROM templates WHERE channel_id=? LIMIT 1""",
+                            (int(tc[0]),),
+                        ).fetchone()
+                except Exception:
+                    pass
             if tpl_row and tpl_row["text_template"]:
                 # Kanal postiga to'liq mos matn — ad_id placeholder bilan.
                 # show_in_public=0 bo'lgan maydonlar publicdan olib tashlanadi,
@@ -632,7 +645,7 @@ async def api_contact(ad_id: int, payload: dict):
     conn = db()
     try:
         ad = conn.execute(
-            "SELECT id, filled_data, posted_chat_id FROM ads WHERE id=? AND status='approved'",
+            "SELECT id, filled_data, posted_chat_id, target_channels FROM ads WHERE id=? AND status='approved'",
             (ad_id,),
         ).fetchone()
         if not ad:
@@ -640,11 +653,23 @@ async def api_contact(ad_id: int, payload: dict):
         tpl = None
         if ad["posted_chat_id"]:
             tpl = conn.execute(
-                """SELECT t.private_chat_id, t.premium_url, t.contact_field_key
+                """SELECT t.private_chat_id, t.premium_url, t.contact_field_key, t.telegram_field_key
                    FROM templates t JOIN channels c ON c.id=t.channel_id
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
             ).fetchone()
+        # Fallback: target_channels (JSON array) dan birinchi channel_id
+        if not tpl and ad["target_channels"]:
+            try:
+                tc = json.loads(ad["target_channels"])
+                if tc:
+                    tpl = conn.execute(
+                        """SELECT private_chat_id, premium_url, contact_field_key, telegram_field_key
+                           FROM templates WHERE channel_id=? LIMIT 1""",
+                        (int(tc[0]),),
+                    ).fetchone()
+            except Exception:
+                pass
         try:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
@@ -655,6 +680,11 @@ async def api_contact(ad_id: int, payload: dict):
     premium_url = (tpl["premium_url"] if tpl else "") or ""
     private_chat_id = tpl["private_chat_id"] if tpl else None
     contact_key = (tpl["contact_field_key"] if tpl else "") or ""
+    tg_key = ""
+    try:
+        tg_key = (tpl["telegram_field_key"] if tpl else "") or ""
+    except Exception:
+        tg_key = ""
 
     if not private_chat_id:
         return {"ok": False, "sent": False, "premium_url": premium_url,
@@ -676,18 +706,34 @@ async def api_contact(ad_id: int, payload: dict):
     if not contact_value:
         return {"ok": False, "error": "contact_field bo'sh", "premium_url": premium_url}
 
+    # Telegram username (admin belgilagan maydondan)
+    tg_username = ""
+    tg_url = ""
+    if tg_key and tg_key in filled:
+        raw = str(filled[tg_key] or "").strip()
+        if raw:
+            # https://t.me/xxx yoki t.me/xxx yoki @xxx yoki xxx
+            if raw.startswith("http"):
+                tg_url = raw
+                tg_username = raw.rstrip("/").split("/")[-1].lstrip("@")
+            else:
+                tg_username = raw.lstrip("@").lstrip("/")
+                if tg_username:
+                    tg_url = f"https://t.me/{tg_username}"
+
     text = f"📞 Aloqa: <b>{contact_value}</b>\n\n🆔 E'lon #{ad_id}"
+    # DM yuborishga urinib ko'ramiz (best-effort), lekin ekranda ham ko'rsatamiz
     try:
-        sb = _tg_post("sendMessage", {
+        _tg_post("sendMessage", {
             "chat_id": user_id, "text": text,
             "parse_mode": "HTML", "disable_web_page_preview": "true",
         })
-        if not sb.get("ok"):
-            return {"ok": False, "error": sb.get("description", "send_failed"), "premium_url": premium_url}
-    except Exception as e:
-        return {"ok": False, "error": f"send_failed: {e}", "premium_url": premium_url}
+    except Exception:
+        pass
 
-    return {"ok": True, "sent": True, "message": "Aloqa ma'lumoti yuborildi"}
+    return {"ok": True, "sent": True, "contact": contact_value,
+            "telegram_url": tg_url, "telegram_username": tg_username,
+            "message": f"📞 Aloqa: {contact_value}"}
 
 
 # REJA10 helpers
@@ -752,7 +798,7 @@ async def api_full_info(ad_id: int, payload: dict):
     conn = db()
     try:
         ad = conn.execute(
-            """SELECT id, filled_data, posted_chat_id, media_file_id, media_type, media_list,
+            """SELECT id, filled_data, posted_chat_id, target_channels, media_file_id, media_type, media_list,
                       private_posted_chat_id, private_posted_message_id
                FROM ads WHERE id=? AND status='approved'""",
             (ad_id,),
@@ -768,6 +814,19 @@ async def api_full_info(ad_id: int, payload: dict):
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
             ).fetchone()
+        # Fallback: target_channels dan birinchi channel_id
+        if not tpl and ad["target_channels"]:
+            try:
+                tc = json.loads(ad["target_channels"])
+                if tc:
+                    tpl = conn.execute(
+                        """SELECT private_chat_id, private_text_template, text_template,
+                                  premium_url, id_prefix
+                           FROM templates WHERE channel_id=? LIMIT 1""",
+                        (int(tc[0]),),
+                    ).fetchone()
+            except Exception:
+                pass
         try:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
@@ -936,7 +995,7 @@ async def api_ad_sold(ad_id: int, payload: dict):
         if ad["posted_chat_id"]:
             tpl = conn.execute(
                 """SELECT t.text_template, t.private_text_template, t.id_prefix,
-                          t.sold_field_key, t.sold_replacement
+                          t.sold_field_key, t.sold_replacement, t.sold_rules
                    FROM templates t JOIN channels c ON c.id=t.channel_id
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
@@ -950,19 +1009,15 @@ async def api_ad_sold(ad_id: int, payload: dict):
 
     if not tpl:
         raise HTTPException(400, "template missing")
-    sold_key = tpl["sold_field_key"] or ""
-    sold_val = tpl["sold_replacement"] or "🔴 SOTILDI"
 
-    # filled_data'ni yangilaymiz
-    new_filled = dict(filled)
-    if sold_key:
-        new_filled[sold_key] = sold_val
-    else:
-        # agar sold_field_key sozlanmagan bo'lsa — title/nomi bo'yicha
-        for k in ("title", "nomi"):
-            if k in new_filled:
-                new_filled[k] = f"{sold_val} — {new_filled[k]}"
-                break
+    # Markaziy sold_rules logika
+    try:
+        from utils.sold_rules import apply_sold
+    except Exception:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from utils.sold_rules import apply_sold
+    new_filled, _applied = apply_sold(filled, tpl)
 
     import datetime as _dt
     new_json = json.dumps(new_filled, ensure_ascii=False)

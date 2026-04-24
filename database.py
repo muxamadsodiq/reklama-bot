@@ -351,6 +351,8 @@ async def upsert_template(
     contact_field_key: str | None = None,
     sold_field_key: str | None = None,
     sold_replacement: str | None = None,
+    telegram_field_key: str | None = None,
+    sold_rules: str | None = None,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -363,7 +365,8 @@ async def upsert_template(
                    button_caption=?, button_url=?, button_url_by_user=?,
                    media_required=?, private_chat_id=?, private_text_template=?,
                    id_prefix=?, premium_url=?,
-                   contact_field_key=?, sold_field_key=?, sold_replacement=?
+                   contact_field_key=?, sold_field_key=?, sold_replacement=?,
+                   telegram_field_key=?, sold_rules=?
                    WHERE channel_id=?""",
                 (
                     text_template,
@@ -379,6 +382,8 @@ async def upsert_template(
                     contact_field_key,
                     sold_field_key,
                     sold_replacement,
+                    telegram_field_key,
+                    sold_rules if sold_rules is not None else "",
                     channel_id,
                 ),
             )
@@ -387,8 +392,8 @@ async def upsert_template(
                 """INSERT INTO templates(channel_id, text_template, button_label,
                    button_caption, button_url, button_url_by_user, media_required,
                    private_chat_id, private_text_template, id_prefix, premium_url,
-                   contact_field_key, sold_field_key, sold_replacement)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   contact_field_key, sold_field_key, sold_replacement, telegram_field_key, sold_rules)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     channel_id,
                     text_template,
@@ -404,6 +409,8 @@ async def upsert_template(
                     contact_field_key,
                     sold_field_key,
                     sold_replacement,
+                    telegram_field_key,
+                    sold_rules if sold_rules is not None else "",
                 ),
             )
         await db.commit()
