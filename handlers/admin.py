@@ -335,6 +335,7 @@ async def ch_view(cb: CallbackQuery):
         [InlineKeyboardButton(text="📝 Shablon matnini tahrirlash", callback_data=f"own:tpl:{ch_id}")],
         [InlineKeyboardButton(text="🔘 Aloqa tugmasi", callback_data=f"own:btn:{ch_id}")],
         [InlineKeyboardButton(text="📝 Sold/Free matnlari", callback_data=f"own:texts:{ch_id}")],
+        [InlineKeyboardButton(text="💎 Obuna sozlamalari", callback_data=f"own:sub:{ch_id}")],
         [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
         [InlineKeyboardButton(text="🎯 Aloqa/Sotildi sozlamalari", callback_data=f"own:r10:{ch_id}")],
@@ -1750,6 +1751,126 @@ async def txt_skip(cb: CallbackQuery, state: FSMContext):
         await _texts_next_ask(cb, state, TextsConfig.free_btn_label)
     elif cur == TextsConfig.free_btn_label.state:
         await _texts_next_ask(cb, state, TextsConfig.free_btn_url)
+    else:
+        await state.clear()
+        await cb.message.answer("✅ Tugadi")
+    await cb.answer("O'tkazildi")
+
+
+# ============================================================================
+# REJA13: Obuna (premium) sozlamalari — 3 bosqich
+# ============================================================================
+class SubConfig(StatesGroup):
+    btn_label = State()
+    offer_text = State()
+    invite_link = State()
+
+
+def _sub_skip_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data="own:subskip")
+    ]])
+
+
+@router.callback_query(F.data.startswith("own:sub:"))
+async def own_sub_start(cb: CallbackQuery, state: FSMContext):
+    try:
+        ch_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        return
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    tpl = await db.get_template(ch_id) or {}
+    cur = _tpl_get(tpl, "sub_btn_label", "") or ""
+    await state.set_state(SubConfig.btn_label)
+    await state.update_data(sub_ch_id=ch_id)
+    await cb.message.answer(
+        "💎 <b>1/3 — Obuna tugma nomi</b>\n\n"
+        "Ommaviy post ostida ko'rinadigan inline tugma nomi. "
+        "Ichida <code>{maydon}</code> ishlatish mumkin (masalan: "
+        "<code>💎 Premium obuna — {price}</code>).\n\n"
+        f"Hozirgi: <code>{cur or '—'}</code>\n\n"
+        "Matn yuboring. Bo'sh qoldirish uchun — bitta tire <code>-</code> yuboring (tugma ko'rinmaydi).",
+        parse_mode="HTML",
+        reply_markup=_sub_skip_kb(),
+    )
+    await cb.answer()
+
+
+async def _sub_next_ask(m_or_cb, state: FSMContext, next_state):
+    data = await state.get_data()
+    ch_id = int(data.get("sub_ch_id") or 0)
+    tpl = await db.get_template(ch_id) or {}
+    send = m_or_cb.message.answer if isinstance(m_or_cb, CallbackQuery) else m_or_cb.answer
+    await state.set_state(next_state)
+    if next_state == SubConfig.offer_text:
+        cur = _tpl_get(tpl, "sub_offer_text", "") or ""
+        await send(
+            "📝 <b>2/3 — Obuna taklif matni</b>\n\n"
+            "User tugmani bosib botga o'tganda ko'radigan matn. "
+            "Keyin user 'Ariza yuborish' tugmasini bosadi.\n\n"
+            f"Hozirgi: <code>{(cur[:250] + '…') if len(cur) > 250 else (cur or '—')}</code>\n\n"
+            "Matn yuboring yoki o'tkazib yuboring (default matn ishlatiladi).",
+            parse_mode="HTML", reply_markup=_sub_skip_kb(),
+        )
+    elif next_state == SubConfig.invite_link:
+        cur = _tpl_get(tpl, "private_invite_link", "") or ""
+        await send(
+            "🔗 <b>3/3 — Maxfiy guruh invite linki</b>\n\n"
+            "Admin obunani qabul qilganda userga yuboriladigan havola. "
+            "Masalan: <code>https://t.me/+AbCdEf...</code>\n\n"
+            f"Hozirgi: <code>{cur or '—'}</code>\n\n"
+            "Agar o'tkazib yuborsangiz va maxfiy guruh chat_id sozlangan bo'lsa, "
+            "bot har safar avtomatik invite link yaratadi (bot guruhda admin bo'lishi shart).",
+            parse_mode="HTML", reply_markup=_sub_skip_kb(),
+        )
+
+
+@router.message(SubConfig.btn_label)
+async def sub_lbl_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("sub_ch_id") or 0)
+    txt = (msg.text or "").strip()
+    if txt == "-":
+        txt = ""
+    if len(txt) > 64:
+        await msg.answer("❌ 64 belgidan uzun bo'lmasin")
+        return
+    await _save_text_col(ch_id, "sub_btn_label", txt)
+    await msg.answer("✅ Saqlandi")
+    await _sub_next_ask(msg, state, SubConfig.offer_text)
+
+
+@router.message(SubConfig.offer_text)
+async def sub_offer_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("sub_ch_id") or 0)
+    await _save_text_col(ch_id, "sub_offer_text", (msg.text or "").strip())
+    await msg.answer("✅ Saqlandi")
+    await _sub_next_ask(msg, state, SubConfig.invite_link)
+
+
+@router.message(SubConfig.invite_link)
+async def sub_link_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("sub_ch_id") or 0)
+    txt = (msg.text or "").strip()
+    if txt and not (txt.startswith("https://t.me/") or txt.startswith("http://t.me/")):
+        await msg.answer("❌ Invite link https://t.me/+... ko'rinishida bo'lsin")
+        return
+    await _save_text_col(ch_id, "private_invite_link", txt)
+    await state.clear()
+    await msg.answer("✅ Obuna sozlamalari saqlandi.")
+
+
+@router.callback_query(F.data == "own:subskip", StateFilter(SubConfig.btn_label, SubConfig.offer_text, SubConfig.invite_link))
+async def sub_skip(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur == SubConfig.btn_label.state:
+        await _sub_next_ask(cb, state, SubConfig.offer_text)
+    elif cur == SubConfig.offer_text.state:
+        await _sub_next_ask(cb, state, SubConfig.invite_link)
     else:
         await state.clear()
         await cb.message.answer("✅ Tugadi")

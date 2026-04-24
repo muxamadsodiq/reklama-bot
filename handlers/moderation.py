@@ -82,7 +82,13 @@ async def approve(cb: CallbackQuery, bot: Bot):
             pub_data = _public_filtered(fields_meta, filled)
         else:
             pub_data = dict(filled)
-        pub_text, pub_kb = build_text_and_kb(tpl, pub_data, ad["custom_url"], ad_id=ad_id)
+        # bot username REJA13 obuna tugmasi uchun
+        try:
+            _me = await bot.get_me()
+            _bot_username = _me.username
+        except Exception:
+            _bot_username = None
+        pub_text, pub_kb = build_text_and_kb(tpl, pub_data, ad["custom_url"], ad_id=ad_id, bot_username=_bot_username, channel_id=int(ch["id"]))
         sent_msg = None
         try:
             media_list = []

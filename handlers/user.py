@@ -155,6 +155,15 @@ async def cb_home(cb: CallbackQuery, state: FSMContext):
 async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
     uid = msg.from_user.id
+    # REJA13: /start sub_<ch_id>_<ad_id> — obuna so'rovi oqimi
+    try:
+        args = (msg.text or "").split(maxsplit=1)
+        if len(args) == 2 and args[1].startswith("sub_"):
+            from handlers.subscription import handle_sub_start
+            await handle_sub_start(msg, args[1])
+            return
+    except Exception:
+        log.exception("sub start hook failed")
     # Survey — agar faol bo'lsa va user hali to'ldirmagan bo'lsa, so'rovnomani boshlaymiz
     try:
         from handlers.survey_user import maybe_start_survey

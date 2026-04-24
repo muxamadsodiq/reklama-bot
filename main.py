@@ -86,6 +86,9 @@ async def main():
     dp.include_router(moderation.router)
     dp.include_router(user.router)
     dp.include_router(user_myposts.router)
+    # REJA13: premium obuna arizalari (callbacklar guruhlarda ham ishlasin)
+    from handlers import subscription as _sub
+    dp.include_router(_sub.router)
 
     # Guruh/kanalga qo'shilganda owner avtomatik ro'yxatga olinadi
     from handlers.membership import router as membership_router

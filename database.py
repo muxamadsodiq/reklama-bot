@@ -80,6 +80,31 @@ async def init_db():
             await db.execute("ALTER TABLE templates ADD COLUMN free_btn_label TEXT DEFAULT ''")
         if "free_btn_url" not in tcols:
             await db.execute("ALTER TABLE templates ADD COLUMN free_btn_url TEXT DEFAULT ''")
+        # REJA13: premium obuna — ommaviy post ostidagi tugma
+        if "sub_btn_label" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN sub_btn_label TEXT DEFAULT ''")
+        if "sub_offer_text" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN sub_offer_text TEXT DEFAULT ''")
+        if "private_invite_link" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN private_invite_link TEXT DEFAULT ''")
+        # REJA13: premium_requests jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS premium_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                user_name TEXT,
+                username TEXT,
+                channel_id INTEGER NOT NULL,
+                ad_id INTEGER,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now')),
+                decided_at TEXT,
+                decided_by INTEGER,
+                admin_msg_id INTEGER,
+                admin_chat_id INTEGER
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_premreq_user_ch ON premium_requests(user_id, channel_id, status)")
         # channels migration — button_label
         cur = await db.execute("PRAGMA table_info(channels)")
         chcols = [r[1] for r in await cur.fetchall()]
