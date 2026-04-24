@@ -118,43 +118,40 @@ async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> boo
         return False
 
 
-async def _post_is_sold_or_empty(ad_id: int, ch_id: int) -> bool:
-    """Post sotilganmi (sold_at) yoki tanlangan public_btn_keys barcha qiymatlari bo'shmi.
-    Agar public_btn_keys o'rnatilmagan bo'lsa — eski logika (butun text_template keylar)."""
+async def _post_status(ad_id: int, ch_id: int) -> tuple[str, dict]:
+    """Return (status, tpl_row) where status ∈ {'sold','empty','ok','missing'}."""
     try:
         ad = await db.get_ad_full(ad_id)
         if not ad:
-            return True  # post o'chib ketgan → "Mavjud emas"
-        if ad["sold_at"]:
-            return True
+            return ("missing", {})
         tpl = await db.get_template(ch_id)
-        if not tpl:
-            return False
+        tpl_d = dict(tpl) if tpl else {}
+        if ad["sold_at"]:
+            return ("sold", tpl_d)
         try:
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
             filled = {}
-        # REJA14: public_btn_keys bor bo'lsa, faqat shu keylar bo'yicha tekshir
-        pub_csv = ""
-        try:
-            pub_csv = (tpl["public_btn_keys"] or "").strip()
-        except (KeyError, IndexError):
-            pub_csv = ""
+        pub_csv = (tpl_d.get("public_btn_keys") or "").strip() if tpl_d else ""
         if pub_csv:
             pub_keys = [k.strip() for k in pub_csv.split(",") if k.strip()]
             has_any = any((str(filled.get(k, "")).strip()) for k in pub_keys)
-            return not has_any
-        # Fallback — eski logika
+            return ("ok" if has_any else "empty", tpl_d)
         from utils.template_parser import extract_placeholders
-        keys = extract_placeholders(tpl["text_template"] or "")
+        keys = extract_placeholders((tpl_d.get("text_template") or "") if tpl_d else "")
         user_keys = [k for k in keys if k not in ("ad_id",)]
         if not user_keys:
-            return False
+            return ("ok", tpl_d)
         has_any_value = any((str(filled.get(k, "")).strip()) for k in user_keys)
-        return not has_any_value
+        return ("ok" if has_any_value else "empty", tpl_d)
     except Exception:
-        log.exception("post_is_sold_or_empty failed")
-        return False
+        log.exception("post_status failed")
+        return ("ok", {})
+
+
+async def _post_is_sold_or_empty(ad_id: int, ch_id: int) -> bool:
+    st, _ = await _post_status(ad_id, ch_id)
+    return st in ("sold", "empty", "missing")
 
 
 async def _get_empty_placeholder(ch_id: int) -> str:
@@ -181,11 +178,20 @@ async def handle_sub_start(msg: Message, payload: str):
         await msg.answer("❌ Kanal topilmadi")
         return
 
-    # 1) AVVAL: post sotilganmi yoki bo'shmi — shunda hammaga empty_placeholder
-    if ad_id and await _post_is_sold_or_empty(ad_id, ch_id):
-        ph = await _get_empty_placeholder(ch_id)
-        await msg.answer(ph or "❌ Mavjud emas — bu post allaqachon topshirilgan yoki o'chirilgan.")
-        return
+    # 1) AVVAL: post holatini aniqla — sotilgan/bo'sh bo'lsa obunani tekshirmasdan javob
+    if ad_id:
+        st, tpl_d = await _post_status(ad_id, ch_id)
+        if st == "sold":
+            txt = (tpl_d.get("sold_text") or "").strip() or "✅ Bu post allaqachon sotilgan."
+            await msg.answer(txt)
+            return
+        if st == "empty":
+            ph = (tpl_d.get("empty_placeholder") or "").strip()
+            await msg.answer(ph or "ℹ️ Bu post hozircha bo'sh — ma'lumot kiritilmagan.")
+            return
+        if st == "missing":
+            await msg.answer("❌ Mavjud emas — bu post o'chirilgan.")
+            return
 
     offer_text, invite_link, private_chat_id = await _get_tpl_texts(ch_id)
 
@@ -238,12 +244,23 @@ async def sub_ask(cb: CallbackQuery):
         await cb.answer("Kanal topilmadi", show_alert=True)
         return
 
-    # Post sotilgan/bo'sh bo'lsa — hammaga empty_placeholder
-    if ad_id and await _post_is_sold_or_empty(ad_id, ch_id):
-        ph = await _get_empty_placeholder(ch_id)
-        await cb.message.answer(ph or "❌ Mavjud emas — bu post allaqachon topshirilgan yoki o'chirilgan.")
-        await cb.answer()
-        return
+    # Post sotilgan/bo'sh bo'lsa — obunani tekshirmasdan to'g'ridan-to'g'ri javob
+    if ad_id:
+        st, tpl_d = await _post_status(ad_id, ch_id)
+        if st == "sold":
+            txt = (tpl_d.get("sold_text") or "").strip() or "✅ Bu post allaqachon sotilgan."
+            await cb.message.answer(txt)
+            await cb.answer()
+            return
+        if st == "empty":
+            ph = (tpl_d.get("empty_placeholder") or "").strip()
+            await cb.message.answer(ph or "ℹ️ Bu post hozircha bo'sh — ma'lumot kiritilmagan.")
+            await cb.answer()
+            return
+        if st == "missing":
+            await cb.message.answer("❌ Mavjud emas — bu post o'chirilgan.")
+            await cb.answer()
+            return
 
     if await _already_pending(cb.from_user.id, ch_id):
         await cb.answer("⏳ Arizangiz allaqachon yuborilgan", show_alert=True)
