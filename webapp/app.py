@@ -645,7 +645,7 @@ async def api_contact(ad_id: int, payload: dict):
     conn = db()
     try:
         ad = conn.execute(
-            "SELECT id, filled_data, posted_chat_id, target_channels FROM ads WHERE id=? AND status='approved'",
+            "SELECT id, filled_data, posted_chat_id, target_channels, sold_at FROM ads WHERE id=? AND status='approved'",
             (ad_id,),
         ).fetchone()
         if not ad:
@@ -653,7 +653,8 @@ async def api_contact(ad_id: int, payload: dict):
         tpl = None
         if ad["posted_chat_id"]:
             tpl = conn.execute(
-                """SELECT t.private_chat_id, t.premium_url, t.contact_field_key, t.telegram_field_key
+                """SELECT t.private_chat_id, t.premium_url, t.contact_field_key, t.telegram_field_key,
+                          t.sold_text, t.free_text, t.free_btn_label, t.free_btn_url
                    FROM templates t JOIN channels c ON c.id=t.channel_id
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
@@ -664,7 +665,8 @@ async def api_contact(ad_id: int, payload: dict):
                 tc = json.loads(ad["target_channels"])
                 if tc:
                     tpl = conn.execute(
-                        """SELECT private_chat_id, premium_url, contact_field_key, telegram_field_key
+                        """SELECT private_chat_id, premium_url, contact_field_key, telegram_field_key,
+                                  sold_text, free_text, free_btn_label, free_btn_url
                            FROM templates WHERE channel_id=? LIMIT 1""",
                         (int(tc[0]),),
                     ).fetchone()
@@ -674,6 +676,7 @@ async def api_contact(ad_id: int, payload: dict):
             filled = json.loads(ad["filled_data"] or "{}")
         except Exception:
             filled = {}
+        is_sold_ad = bool(ad["sold_at"])
     finally:
         conn.close()
 
@@ -681,20 +684,20 @@ async def api_contact(ad_id: int, payload: dict):
     private_chat_id = tpl["private_chat_id"] if tpl else None
     contact_key = (tpl["contact_field_key"] if tpl else "") or ""
     tg_key = ""
+    sold_text = ""
+    free_text = ""
+    free_btn_label = ""
+    free_btn_url = ""
     try:
         tg_key = (tpl["telegram_field_key"] if tpl else "") or ""
+        sold_text = (tpl["sold_text"] if tpl else "") or ""
+        free_text = (tpl["free_text"] if tpl else "") or ""
+        free_btn_label = (tpl["free_btn_label"] if tpl else "") or ""
+        free_btn_url = (tpl["free_btn_url"] if tpl else "") or ""
     except Exception:
-        tg_key = ""
+        pass
 
-    if not private_chat_id:
-        return {"ok": False, "sent": False, "premium_url": premium_url,
-                "message": "Maxfiy guruh sozlanmagan"}
-
-    if not _is_member(private_chat_id, user_id):
-        return {"ok": False, "sent": False, "premium_url": premium_url,
-                "message": "Siz premium obunachi emassiz"}
-
-    # Aloqa qiymati = contact_field_key dan, yo'q bo'lsa phone/telefon fallback
+    # REJA12: Agar post TOPSHIRILGAN bo'lsa (sold_at yoki contact/tg ikkalasi bo'sh)
     contact_value = ""
     if contact_key and contact_key in filled:
         contact_value = str(filled[contact_key] or "").strip()
@@ -704,7 +707,6 @@ async def api_contact(ad_id: int, payload: dict):
                 contact_value = str(filled[k]).strip()
                 break
 
-    # Telegram username (admin belgilagan maydondan)
     tg_username = ""
     tg_url = ""
     if tg_key and tg_key in filled:
@@ -718,10 +720,25 @@ async def api_contact(ad_id: int, payload: dict):
                 if tg_username:
                     tg_url = f"https://t.me/{tg_username}"
 
-    # Agar admin contact va telegram ikkalasini ham olib tashlagan bo'lsa → TOPSHIRILDI
-    if not contact_value and not tg_url:
+    is_sold = is_sold_ad or (not contact_value and not tg_url)
+    if is_sold:
         return {"ok": True, "sent": False, "is_sold": True,
-                "message": "✅ Bu e'lon topshirilgan"}
+                "message": sold_text or "✅ Bu e'lon topshirilgan"}
+
+    if not private_chat_id:
+        # Maxfiy guruh sozlanmagan — oddiy user rejimi bilan bir xil harakat qilamiz
+        private_chat_id = None
+
+    # REJA12: Premium emas (oddiy user) — admin bergan matn + tugma
+    is_premium = bool(private_chat_id) and _is_member(private_chat_id, user_id)
+    if not is_premium:
+        return {"ok": True, "sent": False, "is_free": True,
+                "premium_url": premium_url,
+                "free_text": free_text,
+                "free_btn_label": free_btn_label,
+                "free_btn_url": free_btn_url,
+                "contact": contact_value,
+                "message": free_text or "Siz premium obunachi emassiz"}
 
     # tel: link (faqat telefon raqam bo'lsa)
     tel_link = ""
@@ -812,7 +829,7 @@ async def api_full_info(ad_id: int, payload: dict):
     try:
         ad = conn.execute(
             """SELECT id, filled_data, posted_chat_id, target_channels, media_file_id, media_type, media_list,
-                      private_posted_chat_id, private_posted_message_id
+                      private_posted_chat_id, private_posted_message_id, sold_at
                FROM ads WHERE id=? AND status='approved'""",
             (ad_id,),
         ).fetchone()
@@ -822,7 +839,8 @@ async def api_full_info(ad_id: int, payload: dict):
         if ad["posted_chat_id"]:
             tpl = conn.execute(
                 """SELECT t.private_chat_id, t.private_text_template, t.text_template,
-                          t.premium_url, t.id_prefix
+                          t.premium_url, t.id_prefix,
+                          t.sold_text, t.free_text, t.free_btn_label, t.free_btn_url
                    FROM templates t JOIN channels c ON c.id=t.channel_id
                    WHERE c.chat_id=? LIMIT 1""",
                 (str(ad["posted_chat_id"]),),
@@ -834,7 +852,8 @@ async def api_full_info(ad_id: int, payload: dict):
                 if tc:
                     tpl = conn.execute(
                         """SELECT private_chat_id, private_text_template, text_template,
-                                  premium_url, id_prefix
+                                  premium_url, id_prefix,
+                                  sold_text, free_text, free_btn_label, free_btn_url
                            FROM templates WHERE channel_id=? LIMIT 1""",
                         (int(tc[0]),),
                     ).fetchone()
@@ -851,15 +870,37 @@ async def api_full_info(ad_id: int, payload: dict):
     finally:
         conn.close()
 
-    if not tpl or not tpl["private_chat_id"]:
-        return {"ok": False, "sent": False, "message": "Maxfiy guruh sozlanmagan"}
+    if not tpl:
+        return {"ok": False, "sent": False, "message": "Shablon topilmadi"}
 
-    premium_url = tpl["premium_url"] or ""
-    private_chat_id = tpl["private_chat_id"]
+    premium_url = (tpl["premium_url"] if tpl else "") or ""
+    private_chat_id = tpl["private_chat_id"] or None
+    sold_text = ""
+    free_text = ""
+    free_btn_label = ""
+    free_btn_url = ""
+    try:
+        sold_text = (tpl["sold_text"] or "")
+        free_text = (tpl["free_text"] or "")
+        free_btn_label = (tpl["free_btn_label"] or "")
+        free_btn_url = (tpl["free_btn_url"] or "")
+    except Exception:
+        pass
 
-    if not _is_member(private_chat_id, user_id):
-        return {"ok": False, "sent": False, "premium_url": premium_url,
-                "message": "Siz premium obunachi emassiz"}
+    # REJA12: Agar post TOPSHIRILGAN bo'lsa — hammaga sold_text
+    if ad["sold_at"]:
+        return {"ok": True, "sent": False, "is_sold": True,
+                "message": sold_text or "✅ Bu e'lon topshirilgan"}
+
+    # REJA12: Premium emas user — free_text + tugma
+    is_premium = bool(private_chat_id) and _is_member(private_chat_id, user_id)
+    if not is_premium:
+        return {"ok": True, "sent": False, "is_free": True,
+                "premium_url": premium_url,
+                "free_text": free_text,
+                "free_btn_label": free_btn_label,
+                "free_btn_url": free_btn_url,
+                "message": free_text or "Siz premium obunachi emassiz"}
 
     # 1-variant: forwardMessage — agar bizda maxfiy post ref bo'lsa
     if ad["private_posted_chat_id"] and ad["private_posted_message_id"]:

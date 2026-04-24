@@ -1,5 +1,5 @@
 from aiogram import Router, F, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -334,6 +334,7 @@ async def ch_view(cb: CallbackQuery):
         [InlineKeyboardButton(text="📋 Maydonlar ro'yxati", callback_data=f"own:fields:{ch_id}")],
         [InlineKeyboardButton(text="📝 Shablon matnini tahrirlash", callback_data=f"own:tpl:{ch_id}")],
         [InlineKeyboardButton(text="🔘 Aloqa tugmasi", callback_data=f"own:btn:{ch_id}")],
+        [InlineKeyboardButton(text="📝 Sold/Free matnlari", callback_data=f"own:texts:{ch_id}")],
         [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
         [InlineKeyboardButton(text="🎯 Aloqa/Sotildi sozlamalari", callback_data=f"own:r10:{ch_id}")],
@@ -1594,3 +1595,162 @@ async def r10_sold_rule_delete(cb: CallbackQuery):
         await cb.answer("Topilmadi", show_alert=True)
     await _r10_render(cb, ch_id)
 
+
+
+# ============================================================================
+# REJA12: Sold/Free matnlar — admin o'zgartiradi
+# ============================================================================
+class TextsConfig(StatesGroup):
+    sold_text = State()
+    free_text = State()
+    free_btn_label = State()
+    free_btn_url = State()
+
+
+def _texts_skip_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data="own:txskip")
+    ]])
+
+
+async def _save_text_col(ch_id: int, col: str, value: str):
+    """templates jadvalidagi matn ustunini yangilaydi (yoki yaratadi)."""
+    import aiosqlite
+    from config import DB_PATH
+    async with aiosqlite.connect(DB_PATH) as dbx:
+        cur = await dbx.execute("SELECT id FROM templates WHERE channel_id=?", (ch_id,))
+        row = await cur.fetchone()
+        if row:
+            await dbx.execute(f"UPDATE templates SET {col}=? WHERE channel_id=?", (value, ch_id))
+        else:
+            # Default shablon yaratib, keyin update
+            await dbx.execute(
+                "INSERT INTO templates (channel_id, text_template, id_prefix) VALUES (?, '', '_')",
+                (ch_id,),
+            )
+            await dbx.execute(f"UPDATE templates SET {col}=? WHERE channel_id=?", (value, ch_id))
+        await dbx.commit()
+
+
+@router.callback_query(F.data.startswith("own:texts:"))
+async def own_texts_start(cb: CallbackQuery, state: FSMContext):
+    try:
+        ch_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        return
+    ch = await db.get_channel(ch_id)
+    if not await _ensure_owner(cb, ch):
+        return
+    tpl = await db.get_template(ch_id) or {}
+    cur = _tpl_get(tpl, "sold_text", "") or ""
+    await state.set_state(TextsConfig.sold_text)
+    await state.update_data(tx_ch_id=ch_id)
+    await cb.message.answer(
+        "📝 <b>1/4 — TOPSHIRILDI matni</b>\n\n"
+        "Post topshirilganda (sotildi / yopildi) <u>barcha</u> userlar "
+        "Aloqa va To'liq ma'lumot tugmalarini bosganda ko'radigan matn.\n\n"
+        f"Hozirgi: <code>{(cur[:200] + '…') if len(cur) > 200 else (cur or '—')}</code>\n\n"
+        "Matn yuboring yoki o'tkazib yuborish tugmasini bosing.",
+        parse_mode="HTML",
+        reply_markup=_texts_skip_kb(),
+    )
+    await cb.answer()
+
+
+async def _texts_next_ask(msg_or_cb, state: FSMContext, next_state):
+    data = await state.get_data()
+    ch_id = int(data.get("tx_ch_id") or 0)
+    tpl = await db.get_template(ch_id) or {}
+    await state.set_state(next_state)
+    send = msg_or_cb.message.answer if isinstance(msg_or_cb, CallbackQuery) else msg_or_cb.answer
+    if next_state == TextsConfig.free_text:
+        cur = _tpl_get(tpl, "free_text", "") or ""
+        await send(
+            "👤 <b>2/4 — ODDIY USER matni</b>\n\n"
+            "Premium bo'lmagan user 'Aloqa' yoki 'To'liq ma'lumot' bosganda "
+            "ko'radigan matn (odatda: 'Admin bilan bog'laning', 'Premium oling' va h.k.).\n\n"
+            f"Hozirgi: <code>{(cur[:200] + '…') if len(cur) > 200 else (cur or '—')}</code>\n\n"
+            "Matn yuboring yoki o'tkazib yuboring.",
+            parse_mode="HTML", reply_markup=_texts_skip_kb(),
+        )
+    elif next_state == TextsConfig.free_btn_label:
+        cur = _tpl_get(tpl, "free_btn_label", "") or ""
+        await send(
+            "🔘 <b>3/4 — Oddiy user tugmasi nomi</b>\n\n"
+            "Masalan: <code>📝 Adminga yozish</code>\n\n"
+            f"Hozirgi: <code>{cur or '—'}</code>\n\n"
+            "Nom yuboring yoki o'tkazib yuboring (tugma ko'rinmaydi).",
+            parse_mode="HTML", reply_markup=_texts_skip_kb(),
+        )
+    elif next_state == TextsConfig.free_btn_url:
+        cur = _tpl_get(tpl, "free_btn_url", "") or ""
+        await send(
+            "🔗 <b>4/4 — Oddiy user tugmasi linki</b>\n\n"
+            "Masalan: <code>https://t.me/admin</code>\n\n"
+            f"Hozirgi: <code>{cur or '—'}</code>\n\n"
+            "URL yuboring yoki o'tkazib yuboring.",
+            parse_mode="HTML", reply_markup=_texts_skip_kb(),
+        )
+
+
+@router.message(TextsConfig.sold_text)
+async def txt_sold_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("tx_ch_id") or 0)
+    await _save_text_col(ch_id, "sold_text", (msg.text or "").strip())
+    await msg.answer("✅ Saqlandi")
+    await _texts_next_ask(msg, state, TextsConfig.free_text)
+
+
+@router.message(TextsConfig.free_text)
+async def txt_free_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("tx_ch_id") or 0)
+    await _save_text_col(ch_id, "free_text", (msg.text or "").strip())
+    await msg.answer("✅ Saqlandi")
+    await _texts_next_ask(msg, state, TextsConfig.free_btn_label)
+
+
+@router.message(TextsConfig.free_btn_label)
+async def txt_free_lbl_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("tx_ch_id") or 0)
+    txt = (msg.text or "").strip()
+    if len(txt) > 64:
+        await msg.answer("❌ 64 belgidan uzun bo'lmasin")
+        return
+    await _save_text_col(ch_id, "free_btn_label", txt)
+    await msg.answer("✅ Saqlandi")
+    await _texts_next_ask(msg, state, TextsConfig.free_btn_url)
+
+
+@router.message(TextsConfig.free_btn_url)
+async def txt_free_url_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = int(data.get("tx_ch_id") or 0)
+    txt = (msg.text or "").strip()
+    if txt and not (txt.startswith("http://") or txt.startswith("https://") or txt.startswith("tg://") or txt.startswith("t.me/") or txt.startswith("@")):
+        await msg.answer("❌ URL https:// yoki t.me/ bilan boshlansin")
+        return
+    if txt.startswith("t.me/"):
+        txt = "https://" + txt
+    elif txt.startswith("@"):
+        txt = "https://t.me/" + txt.lstrip("@")
+    await _save_text_col(ch_id, "free_btn_url", txt)
+    await state.clear()
+    await msg.answer("✅ Barcha matnlar saqlandi. Kanal menyusiga qayting.")
+
+
+@router.callback_query(F.data == "own:txskip", StateFilter(TextsConfig.sold_text, TextsConfig.free_text, TextsConfig.free_btn_label, TextsConfig.free_btn_url))
+async def txt_skip(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur == TextsConfig.sold_text.state:
+        await _texts_next_ask(cb, state, TextsConfig.free_text)
+    elif cur == TextsConfig.free_text.state:
+        await _texts_next_ask(cb, state, TextsConfig.free_btn_label)
+    elif cur == TextsConfig.free_btn_label.state:
+        await _texts_next_ask(cb, state, TextsConfig.free_btn_url)
+    else:
+        await state.clear()
+        await cb.message.answer("✅ Tugadi")
+    await cb.answer("O'tkazildi")

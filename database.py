@@ -71,6 +71,15 @@ async def init_db():
             await db.execute("ALTER TABLE templates ADD COLUMN id_prefix TEXT DEFAULT '_'")
         if "premium_url" not in tcols:
             await db.execute("ALTER TABLE templates ADD COLUMN premium_url TEXT")
+        # REJA12: free-tier (oddiy user) va sold matn/tugmasi
+        if "sold_text" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN sold_text TEXT DEFAULT ''")
+        if "free_text" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN free_text TEXT DEFAULT ''")
+        if "free_btn_label" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN free_btn_label TEXT DEFAULT ''")
+        if "free_btn_url" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN free_btn_url TEXT DEFAULT ''")
         # channels migration — button_label
         cur = await db.execute("PRAGMA table_info(channels)")
         chcols = [r[1] for r in await cur.fetchall()]

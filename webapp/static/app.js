@@ -540,33 +540,43 @@ async function handleContact(adId) {
     });
     const data = await res.json();
 
-    // A) TOPSHIRILGAN — admin contact/telegram ikkalasini ham olib tashlagan
+    // A) TOPSHIRILGAN — admin belgilagan sold matni (yoki default)
     if (data.ok && data.is_sold) {
       if (btn) { btn.disabled = true; btn.textContent = "✅ Topshirilgan"; btn.classList.add('ok'); }
-      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">✅ Bu e'lon topshirilgan. Egasi aloqa ma'lumotini olib tashlagan.</div>`;
+      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">${escapeHtml(data.message || "✅ Bu e'lon topshirilgan")}</div>`;
       return;
     }
 
-    // B) MUVAFFAQIYAT — aloqa ma'lumoti mavjud
+    // A2) FREE (premium emas) — admin bergan matn + tugma (ixtiyoriy)
+    if (data.ok && data.is_free) {
+      resetBtn();
+      if (resultEl) {
+        const msg = escapeHtml(data.free_text || data.message || "Siz premium obunachi emassiz");
+        const lbl = (data.free_btn_label || '').trim();
+        const url = (data.free_btn_url || '').trim();
+        const purl = (data.premium_url || '').trim();
+        let html = `<div class="contact-warn" style="white-space:pre-wrap;">${msg}</div>`;
+        if (lbl && url) {
+          html += `<a class="primary-btn premium-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(lbl)}</a>`;
+        } else if (purl) {
+          html += `<a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank" rel="noopener">💎 Premium oling</a>`;
+        }
+        resultEl.innerHTML = html;
+      }
+      return;
+    }
+
+    // B) MUVAFFAQIYAT — aloqa ma'lumoti mavjud (premium user)
     if (data.ok && data.sent) {
       const contact = data.contact || '';
-      const telLink = data.tel_link || '';
       const tgUrl = data.telegram_url || '';
       const tgUser = data.telegram_username || '';
 
-      // ⚡ Darhol avtomatik ochishga urinamiz (brauzer bloklasa — tugma orqali)
-      const primary = telLink || tgUrl;
-      if (primary) tryOpenLink(primary, tg);
-
       if (resultEl) {
         const contactId = `contactVal_${adId}`;
-        const telBtnId = `telBtn_${adId}`;
         const copyBtnId = `copyBtn_${adId}`;
-        const telBtn = telLink
-          ? `<button type="button" class="primary-btn" id="${telBtnId}" style="margin-top:8px; display:block; width:100%; text-align:center;">📲 Qo'ng'iroq qilish</button>`
-          : '';
         const copyBtn = contact
-          ? `<button type="button" class="primary-btn" id="${copyBtnId}" style="margin-top:6px; display:block; width:100%; text-align:center; background:#555;">📋 Raqamni nusxalash</button>`
+          ? `<button type="button" class="primary-btn" id="${copyBtnId}" style="margin-top:8px; display:block; width:100%; text-align:center;">📋 Raqamni nusxalash</button>`
           : '';
         const tgBtnId = `tgBtn_${adId}`;
         const tgBtn = tgUrl
@@ -576,14 +586,13 @@ async function handleContact(adId) {
           <div class="contact-ok">
             ${contact ? `<div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa (bosing — nusxalanadi):</div>
              <div id="${contactId}" style="font-size:20px; font-weight:700; letter-spacing:0.5px; cursor:pointer; user-select:all;">${escapeHtml(contact)}</div>` : ''}
-            ${telBtn}
             ${copyBtn}
             ${tgBtn}
             <div id="copyHint_${adId}" style="margin-top:6px; font-size:12px; opacity:.7; min-height:14px;"></div>
           </div>`;
 
         const hintEl = document.getElementById(`copyHint_${adId}`);
-        const phone = extractPhone(telLink, contact);
+        const phone = extractPhone(data.tel_link || '', contact);
         const showHint = (msg, ok=true) => {
           if (!hintEl) return;
           hintEl.textContent = msg;
@@ -593,22 +602,10 @@ async function handleContact(adId) {
 
         // Raqam matnini bosish → nusxalash
         const cv = document.getElementById(contactId);
-        if (cv && phone) {
+        if (cv && (phone || contact)) {
           cv.addEventListener('click', async () => {
-            const ok = await copyToClipboard(phone);
+            const ok = await copyToClipboard(phone || contact);
             showHint(ok ? '✅ Raqam nusxalandi' : '❌ Nusxalab bo\'lmadi', ok);
-          });
-        }
-
-        // Qo'ng'iroq tugmasi: tel: ochadi + avtomatik buferga nusxalaydi (ishonchli fallback)
-        if (telLink) {
-          const tb = document.getElementById(telBtnId);
-          if (tb) tb.addEventListener('click', async (ev) => {
-            ev.preventDefault();
-            // Oldin buferga nusxalaymiz — shunday qilsak tel: ochilmasa ham raqam qo'lda
-            const copied = await copyToClipboard(phone);
-            tryOpenLink(telLink, tg);
-            showHint(copied ? '📋 Raqam nusxalandi + qo\'ng\'iroq ochilyapti…' : '📞 Qo\'ng\'iroq ochilyapti…', true);
           });
         }
 
@@ -629,23 +626,15 @@ async function handleContact(adId) {
           });
         }
       }
-      // 🔁 Tugma yana bosilsin — "Qayta ochish" holatida qaytamiz
-      if (btn) { btn.disabled = false; btn.textContent = "🔁 Qayta ochish"; btn.classList.add('ok'); }
+      if (btn) { btn.disabled = false; btn.textContent = "🔁 Qayta ko'rish"; btn.classList.add('ok'); }
       return;
     }
 
-    // C) Premium emas yoki xatolik
-    const purl = data.premium_url || '';
+    // C) Boshqa xatolik
     resetBtn();
     if (resultEl) {
-      const warnMsg = escapeHtml(data.message || "Siz premium obunachi emassiz");
-      if (purl) {
-        resultEl.innerHTML = `
-          <div class="contact-warn">❌ ${warnMsg}. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
-          <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
-      } else {
-        resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
-      }
+      const warnMsg = escapeHtml(data.message || "Xatolik");
+      resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
     }
   } catch (e) {
     resetBtn();
@@ -677,21 +666,38 @@ async function handleFullInfo(adId) {
       body: JSON.stringify({init_data: initData, user_id: userId}),
     });
     const data = await res.json();
+    // REJA12: TOPSHIRILGAN
+    if (data.ok && data.is_sold) {
+      if (btn) { btn.disabled = true; btn.textContent = "✅ Topshirilgan"; btn.classList.add('ok'); }
+      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">${escapeHtml(data.message || "✅ Bu e'lon topshirilgan")}</div>`;
+      return;
+    }
+    // REJA12: Premium emas — admin bergan matn + tugma
+    if (data.ok && data.is_free) {
+      if (btn) { btn.disabled = false; btn.textContent = "📄 To'liq ma'lumot"; }
+      if (resultEl) {
+        const msg = escapeHtml(data.free_text || data.message || "Siz premium obunachi emassiz");
+        const lbl = (data.free_btn_label || '').trim();
+        const url = (data.free_btn_url || '').trim();
+        const purl = (data.premium_url || '').trim();
+        let html = `<div class="contact-warn" style="white-space:pre-wrap;">${msg}</div>`;
+        if (lbl && url) {
+          html += `<a class="primary-btn premium-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(lbl)}</a>`;
+        } else if (purl) {
+          html += `<a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank" rel="noopener">💎 Premium oling</a>`;
+        }
+        resultEl.innerHTML = html;
+      }
+      return;
+    }
     if (data.ok && data.sent) {
       if (btn) { btn.textContent = "✅ To'liq ma'lumot yuborildi"; btn.classList.add('ok'); }
       if (resultEl) resultEl.innerHTML = `<div class="contact-ok">📩 To'liq post shaxsiy xabarda yuborildi. Botga o'ting.</div>`;
     } else {
-      const purl = data.premium_url || '';
       if (btn) { btn.disabled = false; btn.textContent = "📄 To'liq ma'lumot"; }
       if (resultEl) {
-        const warnMsg = escapeHtml(data.message || "Siz premium obunachi emassiz");
-        if (purl) {
-          resultEl.innerHTML = `
-            <div class="contact-warn">❌ ${warnMsg}. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
-            <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
-        } else {
-          resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
-        }
+        const warnMsg = escapeHtml(data.message || "Xatolik");
+        resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
       }
     }
   } catch (e) {
