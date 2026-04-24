@@ -463,21 +463,18 @@ function renderDetail(d) {
 // Link ochish helperi — Telegram WebApp cheklovlarini aylanib o'tadi.
 // tel:/mailto:/sms: → fallback qatori; http(s) t.me → Telegram API ni sinab ko'radi.
 function tryOpenLink(url, tg) {
-  if (!url) return;
+  if (!url) return false;
   const isTel = /^(tel|sms|mailto):/i.test(url);
   const isTme = /^https?:\/\/(t\.me|telegram\.me)\//i.test(url);
   try {
     if (isTme) {
-      // Telegram WebApp native API (stPrefer) — topga o'tkazadi
-      if (tg?.openTelegramLink) { tg.openTelegramLink(url); return; }
-      if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return; }
+      if (tg?.openTelegramLink) { tg.openTelegramLink(url); return true; }
+      if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return true; }
       window.open(url, '_blank');
-      return;
+      return true;
     }
     if (isTel) {
-      // 1) Telegram openLink ba'zan tel: ni qo'llab-quvvatlaydi
-      try { if (tg?.openLink) { tg.openLink(url); return; } } catch (_) {}
-      // 2) Yashirin <a> yaratib click qilamiz — iOS/Android WebView aksari buni qabul qiladi
+      try { if (tg?.openLink) { tg.openLink(url); return true; } } catch (_) {}
       const a = document.createElement('a');
       a.href = url;
       a.style.display = 'none';
@@ -485,18 +482,43 @@ function tryOpenLink(url, tg) {
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { try { a.remove(); } catch (_) {} }, 500);
-      // 3) Yakuniy fallback
-      setTimeout(() => {
-        try { window.location.href = url; } catch (_) {}
-      }, 50);
-      return;
+      setTimeout(() => { try { window.location.href = url; } catch (_) {} }, 50);
+      return true;
     }
-    // Umumiy URL
-    if (tg?.openLink) { tg.openLink(url); return; }
+    if (tg?.openLink) { tg.openLink(url); return true; }
     window.open(url, '_blank');
+    return true;
   } catch (e) {
-    try { window.location.href = url; } catch (_) {}
+    try { window.location.href = url; return true; } catch (_) { return false; }
   }
+}
+
+// Matnni buferga nusxalash — fallback qo'llanadi
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (_) { return false; }
+}
+
+// tel: dan raqamni ajratib olish
+function extractPhone(telLink, fallback) {
+  if (telLink) return telLink.replace(/^tel:/i, '');
+  const d = String(fallback || '').replace(/[^+\d]/g, '');
+  return d;
 }
 
 async function handleContact(adId) {
@@ -537,9 +559,14 @@ async function handleContact(adId) {
       if (primary) tryOpenLink(primary, tg);
 
       if (resultEl) {
+        const contactId = `contactVal_${adId}`;
         const telBtnId = `telBtn_${adId}`;
+        const copyBtnId = `copyBtn_${adId}`;
         const telBtn = telLink
           ? `<button type="button" class="primary-btn" id="${telBtnId}" style="margin-top:8px; display:block; width:100%; text-align:center;">📲 Qo'ng'iroq qilish</button>`
+          : '';
+        const copyBtn = contact
+          ? `<button type="button" class="primary-btn" id="${copyBtnId}" style="margin-top:6px; display:block; width:100%; text-align:center; background:#555;">📋 Raqamni nusxalash</button>`
           : '';
         const tgBtnId = `tgBtn_${adId}`;
         const tgBtn = tgUrl
@@ -547,19 +574,53 @@ async function handleContact(adId) {
           : '';
         resultEl.innerHTML = `
           <div class="contact-ok">
-            ${contact ? `<div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa:</div>
-             <div style="font-size:20px; font-weight:700; letter-spacing:0.5px;">${escapeHtml(contact)}</div>` : ''}
+            ${contact ? `<div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa (bosing — nusxalanadi):</div>
+             <div id="${contactId}" style="font-size:20px; font-weight:700; letter-spacing:0.5px; cursor:pointer; user-select:all;">${escapeHtml(contact)}</div>` : ''}
             ${telBtn}
+            ${copyBtn}
             ${tgBtn}
+            <div id="copyHint_${adId}" style="margin-top:6px; font-size:12px; opacity:.7; min-height:14px;"></div>
           </div>`;
-        // Event listenerlarni biriktiramiz (Telegram WebApp <a href="tel:..."> ni bloklaydi)
-        if (telLink) {
-          const tb = document.getElementById(telBtnId);
-          if (tb) tb.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            tryOpenLink(telLink, tg);
+
+        const hintEl = document.getElementById(`copyHint_${adId}`);
+        const phone = extractPhone(telLink, contact);
+        const showHint = (msg, ok=true) => {
+          if (!hintEl) return;
+          hintEl.textContent = msg;
+          hintEl.style.color = ok ? '#2db83d' : '#d24';
+          setTimeout(() => { if (hintEl) hintEl.textContent = ''; }, 2500);
+        };
+
+        // Raqam matnini bosish → nusxalash
+        const cv = document.getElementById(contactId);
+        if (cv && phone) {
+          cv.addEventListener('click', async () => {
+            const ok = await copyToClipboard(phone);
+            showHint(ok ? '✅ Raqam nusxalandi' : '❌ Nusxalab bo\'lmadi', ok);
           });
         }
+
+        // Qo'ng'iroq tugmasi: tel: ochadi + avtomatik buferga nusxalaydi (ishonchli fallback)
+        if (telLink) {
+          const tb = document.getElementById(telBtnId);
+          if (tb) tb.addEventListener('click', async (ev) => {
+            ev.preventDefault();
+            // Oldin buferga nusxalaymiz — shunday qilsak tel: ochilmasa ham raqam qo'lda
+            const copied = await copyToClipboard(phone);
+            tryOpenLink(telLink, tg);
+            showHint(copied ? '📋 Raqam nusxalandi + qo\'ng\'iroq ochilyapti…' : '📞 Qo\'ng\'iroq ochilyapti…', true);
+          });
+        }
+
+        // Nusxalash tugmasi
+        if (contact) {
+          const cb = document.getElementById(copyBtnId);
+          if (cb) cb.addEventListener('click', async () => {
+            const ok = await copyToClipboard(phone || contact);
+            showHint(ok ? '✅ Raqam nusxalandi' : '❌ Nusxalab bo\'lmadi', ok);
+          });
+        }
+
         if (tgUrl) {
           const gb = document.getElementById(tgBtnId);
           if (gb) gb.addEventListener('click', (ev) => {
