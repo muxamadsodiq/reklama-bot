@@ -836,40 +836,10 @@ async def sa_rt_chtg(cb: CallbackQuery):
 
 
 # ============================================================================
-# TOPSHIRILDI / DONE RULES — REJA5 (super admin template field'larga qoida qo'shish)
+# REJA5 DoneRule — DEPRECATED (sold_rules markaziy helper bilan almashtirildi)
 # ============================================================================
-# Bu yerda "sa:fld:done:<field_id>" tugmasi template_fields ro'yxatida
-# har bir maydon uchun ko'rinadi — uni toggle qiladi va matnni so'raydi.
-# Admin tarafida template_fields ro'yxatida yangi tugma qo'shamiz (admin.py'da).
-class DoneRule(StatesGroup):
-    wait_text = State()
-
-
-@router.callback_query(F.data.startswith("sa:fld:donetxt:"))
-async def sa_fld_donetxt(cb: CallbackQuery, state: FSMContext):
-    field_id = int(cb.data.split(":")[3])
-    await state.set_state(DoneRule.wait_text)
-    await state.update_data(fld_id=field_id)
-    await cb.message.answer(
-        "Bu maydon uchun 'Topshirildi' holatidagi matnni yuboring.\n"
-        "Masalan: <code>✅ Topshirildi</code> yoki <code>🔒 Yopildi</code>",
-        parse_mode="HTML",
-    )
-    await cb.answer()
-
-
-@router.message(DoneRule.wait_text)
-async def sa_fld_donetxt_save(msg: Message, state: FSMContext):
-    data = await state.get_data()
-    fld_id = data.get("fld_id")
-    txt = (msg.text or "").strip()
-    if not txt or len(txt) > 200:
-        await msg.answer("❌ Matn 1-200 belgi bo'lishi kerak")
-        return
-    await db.field_set_done_rule(fld_id, 1, txt)
-    await state.clear()
-    await msg.answer(f"✅ Saqlandi. Endi user 'Topshirildi' bossa bu maydon '<b>{txt}</b>' ga almashadi.",
-                     parse_mode="HTML")
+# Eski "sa:fld:donetxt:<id>" flow olib tashlandi. Endi sold logikasi
+# utils/sold_rules.py orqali boshqariladi va admin R10 menyusidan sozlanadi.
 
 
 # ---------- Kategoriya icon sozlash (routing_nodes) ----------

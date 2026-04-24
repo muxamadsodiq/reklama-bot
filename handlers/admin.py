@@ -70,7 +70,6 @@ class MakeTemplate(StatesGroup):
     private_chat_id = State()
     private_text = State()
     field_question = State()   # admin savol yozadi
-    field_visibility = State() # public da ko'rinadimi
     extra_choice = State()     # ➕ yana maydon qo'shamizmi
     extra_key = State()        # yangi {key} nomi
     extra_where = State()      # qayerga (public/private)
@@ -911,32 +910,6 @@ async def field_question(msg: Message, state: FSMContext):
     update["field_idx"] = data["field_idx"] + 1
     await state.update_data(**update)
     await _ask_field_question(msg, state)
-
-
-# Legacy handler — hech qachon chaqirilmaydi, lekin eski FSM state'lar
-# tozalangunicha xavfsiz bo'lishi uchun qoldirildi.
-@router.callback_query(MakeTemplate.field_visibility, F.data.startswith("fld:vis:"))
-async def field_visibility(cb: CallbackQuery, state: FSMContext):
-    show_public = cb.data.endswith("1")
-    data = await state.get_data()
-    fields = list(data.get("fields", []))
-    fields.append({
-        "key": data["_cur_key"],
-        "question": data["_cur_q"],
-        "show_in_public": show_public,
-    })
-    update = {"fields": fields}
-    if data.get("_extra_mode"):
-        update["_extra_mode"] = False
-        update["_extra_key"] = None
-        await state.update_data(**update)
-        await cb.answer("Qo'shildi")
-        await _ask_extra(cb.message, state)
-        return
-    update["field_idx"] = data["field_idx"] + 1
-    await state.update_data(**update)
-    await cb.answer("Saqlandi")
-    await _ask_field_question(cb.message, state)
 
 
 async def _ask_extra(msg: Message, state: FSMContext):
