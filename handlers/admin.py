@@ -1053,12 +1053,18 @@ async def pub_btn_label_input(msg: Message, state: FSMContext):
         await msg.answer("❌ Juda uzun (maks 64 belgi). Qayta:")
         return
     await state.update_data(pub_btn_label=label)
-    # Shablon matnidan {key}larni olib, checkbox ro'yxatini chiqar
+    # Shablon matnidagi {key}lar + qo'shilgan barcha fields — hammasini birlashtir
     data = await state.get_data()
     import re
-    keys = list(dict.fromkeys(re.findall(r"\{([a-zA-Z0-9_]+)\}", data.get("text", ""))))
-    # ad_id ichki — tashlab ketamiz
-    keys = [k for k in keys if k != "ad_id"]
+    tpl_keys = re.findall(r"\{([a-zA-Z0-9_]+)\}", data.get("text", ""))
+    field_keys = [f.get("key") for f in (data.get("fields") or []) if f.get("key")]
+    # Tartib: avval shablon matnidagi keylar, so'ng qo'shimcha fields
+    seen = set()
+    keys = []
+    for k in list(tpl_keys) + list(field_keys):
+        if k and k != "ad_id" and k not in seen:
+            seen.add(k)
+            keys.append(k)
     if not keys:
         await msg.answer("⚠️ Shablon matnida hech qanday {o'zgaruvchi} topilmadi. Tugmasiz davom etamiz.")
         await state.update_data(pub_btn_label="", pub_btn_keys="")
