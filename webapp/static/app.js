@@ -459,6 +459,46 @@ function renderDetail(d) {
 }
 
 // REJA9/11: premium-gated contact → darhol tel: yoki t.me/username ochadi
+
+// Link ochish helperi — Telegram WebApp cheklovlarini aylanib o'tadi.
+// tel:/mailto:/sms: → fallback qatori; http(s) t.me → Telegram API ni sinab ko'radi.
+function tryOpenLink(url, tg) {
+  if (!url) return;
+  const isTel = /^(tel|sms|mailto):/i.test(url);
+  const isTme = /^https?:\/\/(t\.me|telegram\.me)\//i.test(url);
+  try {
+    if (isTme) {
+      // Telegram WebApp native API (stPrefer) — topga o'tkazadi
+      if (tg?.openTelegramLink) { tg.openTelegramLink(url); return; }
+      if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return; }
+      window.open(url, '_blank');
+      return;
+    }
+    if (isTel) {
+      // 1) Telegram openLink ba'zan tel: ni qo'llab-quvvatlaydi
+      try { if (tg?.openLink) { tg.openLink(url); return; } } catch (_) {}
+      // 2) Yashirin <a> yaratib click qilamiz — iOS/Android WebView aksari buni qabul qiladi
+      const a = document.createElement('a');
+      a.href = url;
+      a.style.display = 'none';
+      a.setAttribute('target', '_self');
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { try { a.remove(); } catch (_) {} }, 500);
+      // 3) Yakuniy fallback
+      setTimeout(() => {
+        try { window.location.href = url; } catch (_) {}
+      }, 50);
+      return;
+    }
+    // Umumiy URL
+    if (tg?.openLink) { tg.openLink(url); return; }
+    window.open(url, '_blank');
+  } catch (e) {
+    try { window.location.href = url; } catch (_) {}
+  }
+}
+
 async function handleContact(adId) {
   const resultEl = document.getElementById('contactResult');
   const btn = document.getElementById('detailContactBtn');
@@ -492,26 +532,18 @@ async function handleContact(adId) {
       const tgUrl = data.telegram_url || '';
       const tgUser = data.telegram_username || '';
 
-      // ⚡ Darhol avtomatik ochamiz: telefon bo'lsa tel:, aks holda t.me/
+      // ⚡ Darhol avtomatik ochishga urinamiz (brauzer bloklasa — tugma orqali)
       const primary = telLink || tgUrl;
-      if (primary) {
-        try {
-          if (tg?.openLink && tgUrl && primary === tgUrl) {
-            tg.openLink(tgUrl); // Telegram link in Telegram WebView
-          } else if (tg?.openTelegramLink && tgUrl && primary === tgUrl) {
-            tg.openTelegramLink(tgUrl);
-          } else {
-            window.location.href = primary; // tel: yoki t.me
-          }
-        } catch (e) { window.location.href = primary; }
-      }
+      if (primary) tryOpenLink(primary, tg);
 
       if (resultEl) {
+        const telBtnId = `telBtn_${adId}`;
         const telBtn = telLink
-          ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none;" href="${escapeHtml(telLink)}">📲 Qo'ng'iroq qilish</a>`
+          ? `<button type="button" class="primary-btn" id="${telBtnId}" style="margin-top:8px; display:block; width:100%; text-align:center;">📲 Qo'ng'iroq qilish</button>`
           : '';
+        const tgBtnId = `tgBtn_${adId}`;
         const tgBtn = tgUrl
-          ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none; background:#229ED9;" href="${escapeHtml(tgUrl)}" target="_blank" rel="noopener">💬 Telegram${tgUser ? ': @'+escapeHtml(tgUser) : ''}</a>`
+          ? `<button type="button" class="primary-btn" id="${tgBtnId}" style="margin-top:8px; display:block; width:100%; text-align:center; background:#229ED9;">💬 Telegram${tgUser ? ': @'+escapeHtml(tgUser) : ''}</button>`
           : '';
         resultEl.innerHTML = `
           <div class="contact-ok">
@@ -520,6 +552,21 @@ async function handleContact(adId) {
             ${telBtn}
             ${tgBtn}
           </div>`;
+        // Event listenerlarni biriktiramiz (Telegram WebApp <a href="tel:..."> ni bloklaydi)
+        if (telLink) {
+          const tb = document.getElementById(telBtnId);
+          if (tb) tb.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            tryOpenLink(telLink, tg);
+          });
+        }
+        if (tgUrl) {
+          const gb = document.getElementById(tgBtnId);
+          if (gb) gb.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            tryOpenLink(tgUrl, tg);
+          });
+        }
       }
       // 🔁 Tugma yana bosilsin — "Qayta ochish" holatida qaytamiz
       if (btn) { btn.disabled = false; btn.textContent = "🔁 Qayta ochish"; btn.classList.add('ok'); }
