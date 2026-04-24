@@ -697,14 +697,12 @@ async def api_contact(ad_id: int, payload: dict):
     # Aloqa qiymati = contact_field_key dan, yo'q bo'lsa phone/telefon fallback
     contact_value = ""
     if contact_key and contact_key in filled:
-        contact_value = str(filled[contact_key] or "")
+        contact_value = str(filled[contact_key] or "").strip()
     if not contact_value:
         for k in ("phone", "telefon", "contact", "tel", "nomer"):
             if filled.get(k):
-                contact_value = str(filled[k])
+                contact_value = str(filled[k]).strip()
                 break
-    if not contact_value:
-        return {"ok": False, "error": "contact_field bo'sh", "premium_url": premium_url}
 
     # Telegram username (admin belgilagan maydondan)
     tg_username = ""
@@ -712,7 +710,6 @@ async def api_contact(ad_id: int, payload: dict):
     if tg_key and tg_key in filled:
         raw = str(filled[tg_key] or "").strip()
         if raw:
-            # https://t.me/xxx yoki t.me/xxx yoki @xxx yoki xxx
             if raw.startswith("http"):
                 tg_url = raw
                 tg_username = raw.rstrip("/").split("/")[-1].lstrip("@")
@@ -721,8 +718,23 @@ async def api_contact(ad_id: int, payload: dict):
                 if tg_username:
                     tg_url = f"https://t.me/{tg_username}"
 
-    text = f"📞 Aloqa: <b>{contact_value}</b>\n\n🆔 E'lon #{ad_id}"
-    # DM yuborishga urinib ko'ramiz (best-effort), lekin ekranda ham ko'rsatamiz
+    # Agar admin contact va telegram ikkalasini ham olib tashlagan bo'lsa → TOPSHIRILDI
+    if not contact_value and not tg_url:
+        return {"ok": True, "sent": False, "is_sold": True,
+                "message": "✅ Bu e'lon topshirilgan"}
+
+    # tel: link (faqat telefon raqam bo'lsa)
+    tel_link = ""
+    digits = re.sub(r"[^+\d]", "", contact_value)
+    if digits and (digits.startswith("+") or len(digits) >= 7):
+        tel_link = f"tel:{digits}"
+
+    text_lines = [f"🆔 E'lon #{ad_id}"]
+    if contact_value:
+        text_lines.insert(0, f"📞 Aloqa: <b>{contact_value}</b>")
+    if tg_url:
+        text_lines.insert(-1 if contact_value else 0, f"💬 Telegram: {tg_url}")
+    text = "\n\n".join(text_lines)
     try:
         _tg_post("sendMessage", {
             "chat_id": user_id, "text": text,
@@ -732,6 +744,7 @@ async def api_contact(ad_id: int, payload: dict):
         pass
 
     return {"ok": True, "sent": True, "contact": contact_value,
+            "tel_link": tel_link,
             "telegram_url": tg_url, "telegram_username": tg_username,
             "message": f"📞 Aloqa: {contact_value}"}
 

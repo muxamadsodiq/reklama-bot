@@ -458,12 +458,15 @@ function renderDetail(d) {
   if (fbtn) fbtn.addEventListener('click', () => handleFullInfo(d.id));
 }
 
-// REJA9: premium-gated contact
+// REJA9/11: premium-gated contact → darhol tel: yoki t.me/username ochadi
 async function handleContact(adId) {
   const resultEl = document.getElementById('contactResult');
   const btn = document.getElementById('detailContactBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Tekshirilmoqda…'; }
+  // ⚡ Har bosishda tozalab qaytamiz — "bir marta bosiladi" bugi yo'q
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Tekshirilmoqda…'; btn.classList.remove('ok'); }
   if (resultEl) resultEl.innerHTML = '';
+  // reset helper — har holatdan keyin chaqiriladi
+  const resetBtn = () => { if (btn) { btn.disabled = false; btn.textContent = "📞 Aloqa"; btn.classList.remove('ok'); } };
   try {
     const tg = window.Telegram?.WebApp;
     const initData = tg?.initData || '';
@@ -474,45 +477,70 @@ async function handleContact(adId) {
       body: JSON.stringify({init_data: initData, user_id: userId}),
     });
     const data = await res.json();
+
+    // A) TOPSHIRILGAN — admin contact/telegram ikkalasini ham olib tashlagan
+    if (data.ok && data.is_sold) {
+      if (btn) { btn.disabled = true; btn.textContent = "✅ Topshirilgan"; btn.classList.add('ok'); }
+      if (resultEl) resultEl.innerHTML = `<div class="contact-ok">✅ Bu e'lon topshirilgan. Egasi aloqa ma'lumotini olib tashlagan.</div>`;
+      return;
+    }
+
+    // B) MUVAFFAQIYAT — aloqa ma'lumoti mavjud
     if (data.ok && data.sent) {
-      if (btn) { btn.textContent = '✅ Aloqa ochildi'; btn.classList.add('ok'); }
+      const contact = data.contact || '';
+      const telLink = data.tel_link || '';
+      const tgUrl = data.telegram_url || '';
+      const tgUser = data.telegram_username || '';
+
+      // ⚡ Darhol avtomatik ochamiz: telefon bo'lsa tel:, aks holda t.me/
+      const primary = telLink || tgUrl;
+      if (primary) {
+        try {
+          if (tg?.openLink && tgUrl && primary === tgUrl) {
+            tg.openLink(tgUrl); // Telegram link in Telegram WebView
+          } else if (tg?.openTelegramLink && tgUrl && primary === tgUrl) {
+            tg.openTelegramLink(tgUrl);
+          } else {
+            window.location.href = primary; // tel: yoki t.me
+          }
+        } catch (e) { window.location.href = primary; }
+      }
+
       if (resultEl) {
-        const contact = escapeHtml(data.contact || '');
-        const tel = /^[+\d][\d\s\-()]+$/.test(data.contact || '') ? `tel:${(data.contact||'').replace(/[^+\d]/g,'')}` : '';
-        const tgUrl = data.telegram_url || '';
-        const tgUser = data.telegram_username || '';
-        const tgBtn = tgUrl ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none; background:#229ED9;" href="${escapeHtml(tgUrl)}" target="_blank" rel="noopener">💬 Telegram${tgUser ? ': @'+escapeHtml(tgUser) : ''}</a>` : '';
+        const telBtn = telLink
+          ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none;" href="${escapeHtml(telLink)}">📲 Qo'ng'iroq qilish</a>`
+          : '';
+        const tgBtn = tgUrl
+          ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none; background:#229ED9;" href="${escapeHtml(tgUrl)}" target="_blank" rel="noopener">💬 Telegram${tgUser ? ': @'+escapeHtml(tgUser) : ''}</a>`
+          : '';
         resultEl.innerHTML = `
           <div class="contact-ok">
-            <div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa:</div>
-            <div style="font-size:20px; font-weight:700; letter-spacing:0.5px;">${contact}</div>
-            ${tel ? `<a class="primary-btn" style="margin-top:8px; display:block; text-align:center; text-decoration:none;" href="${tel}">📲 Qo'ng'iroq qilish</a>` : ''}
+            ${contact ? `<div style="font-size:13px; opacity:.8; margin-bottom:4px;">📞 Aloqa:</div>
+             <div style="font-size:20px; font-weight:700; letter-spacing:0.5px;">${escapeHtml(contact)}</div>` : ''}
+            ${telBtn}
             ${tgBtn}
           </div>`;
       }
-    } else if (data.ok && !data.sent) {
-      if (btn) { btn.disabled = false; btn.textContent = '📞 Aloqa'; }
-      if (resultEl) resultEl.innerHTML = `<div class="contact-warn">❌ Siz premium obunachi emassiz</div>`;
-    } else {
-      // Not a member or send failed → show premium CTA
-      const purl = data.premium_url || '';
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = '📞 Aloqa';
-      }
-      if (resultEl) {
-        const warnMsg = escapeHtml(data.message || "Siz premium obunachi emassiz");
-        if (purl) {
-          resultEl.innerHTML = `
-            <div class="contact-warn">❌ ${warnMsg}. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
-            <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
-        } else {
-          resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
-        }
+      // 🔁 Tugma yana bosilsin — "Qayta ochish" holatida qaytamiz
+      if (btn) { btn.disabled = false; btn.textContent = "🔁 Qayta ochish"; btn.classList.add('ok'); }
+      return;
+    }
+
+    // C) Premium emas yoki xatolik
+    const purl = data.premium_url || '';
+    resetBtn();
+    if (resultEl) {
+      const warnMsg = escapeHtml(data.message || "Siz premium obunachi emassiz");
+      if (purl) {
+        resultEl.innerHTML = `
+          <div class="contact-warn">❌ ${warnMsg}. Maxfiy guruhga a'zo bo'lishingiz kerak.</div>
+          <a class="primary-btn premium-btn" href="${escapeHtml(purl)}" target="_blank">💎 Premium oling</a>`;
+      } else {
+        resultEl.innerHTML = `<div class="contact-warn">❌ ${warnMsg}</div>`;
       }
     }
   } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = '📞 Aloqa'; }
+    resetBtn();
     if (resultEl) resultEl.innerHTML = `<div class="contact-warn">Xatolik: ${escapeHtml(String(e))}</div>`;
   }
 }
