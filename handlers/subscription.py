@@ -81,8 +81,8 @@ async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> boo
         except Exception:
             filled = {}
 
-        lines = ["💎 <b>Premium ma'lumot</b>\n"]
-        # Telefon / aloqa
+        lines = []
+        # Telefon / aloqa — faqat qiymat
         contact_val = ""
         if contact_key and filled.get(contact_key):
             contact_val = str(filled.get(contact_key) or "").strip()
@@ -92,25 +92,19 @@ async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> boo
                     contact_val = str(filled[k]).strip()
                     break
         if contact_val:
-            lines.append(f"📞 <b>Telefon:</b> <code>{contact_val}</code>")
+            lines.append(contact_val)
 
-        # Telegram username
+        # Telegram — faqat qiymat
         tg_val = ""
         if tg_key and filled.get(tg_key):
             tg_val = str(filled.get(tg_key) or "").strip()
         if tg_val:
-            if tg_val.startswith("http"):
-                lines.append(f"✈️ <b>Telegram:</b> {tg_val}")
-            else:
-                uname = tg_val.lstrip("@").lstrip("/")
-                lines.append(f"✈️ <b>Telegram:</b> @{uname} (https://t.me/{uname})")
+            lines.append(tg_val)
 
-        if len(lines) == 1:
-            # Hech narsa topilmadi
-            lines.append("<i>Bu postda maxfiy ma'lumot yo'q.</i>")
+        if not lines:
+            return False
 
-        lines.append(f"\n🆔 Post: #{ad_id}")
-        await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+        await bot.send_message(chat_id, "\n".join(lines), disable_web_page_preview=True)
         return True
     except Exception:
         log.exception("send_full_post failed")
