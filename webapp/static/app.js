@@ -150,7 +150,7 @@ function cardHTML(ad) {
           <span class="muted">${timeAgo(ad.created_at)} ${views}</span>
         </div>
       </div>
-      <button class="fav-btn ${isFav ? 'on' : ''}" data-fav="${ad.id}" aria-label="Sevimli">${isFav ? '❤️' : '🤍'}</button>
+      <button type="button" class="fav-btn ${isFav ? 'on' : ''}" data-fav="${ad.id}" aria-label="Sevimli">${isFav ? '❤️' : '🤍'}</button>
     </article>
   `;
 }
@@ -754,6 +754,7 @@ document.addEventListener('click', async (e) => {
   }
   const favBtn = e.target.closest('[data-fav]');
   if (favBtn) {
+    e.preventDefault();
     e.stopPropagation();
     const id = parseInt(favBtn.dataset.fav);
     const on = LS.toggleFav(id);
