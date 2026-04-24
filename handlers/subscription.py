@@ -5,7 +5,11 @@ Oqim:
 2. User botda 'Ariza yuborish' bosadi → admin'ga notify, kanal egasi ✅/❌ bosadi
 3. ✅ → userga maxfiy guruh invite linki yuboriladi
 4. ❌ → rad etildi xabari
+
+REJA13b: Agar user allaqachon maxfiy guruh a'zosi bo'lsa — obuna tugmasini bosganda
+to'liq to'ldirilgan post matnini (raqam/Telegram bilan) ko'rsatamiz.
 """
+import json
 import logging
 import aiosqlite
 from aiogram import Router, F, Bot
@@ -13,6 +17,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 import database as db
 from config import DB_PATH
+from utils.preview_builder import build_text_and_kb
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -50,6 +55,42 @@ async def _is_premium_member(bot: Bot, user_id: int, private_chat_id) -> bool:
         return False
 
 
+async def _send_full_post(bot: Bot, chat_id: int, ch_id: int, ad_id: int) -> bool:
+    """Premium a'zoga to'liq to'ldirilgan post matnini yuboradi.
+    Qaytaradi: True — yuborildi, False — xatolik/topilmadi.
+    """
+    try:
+        ad = await db.get_ad_full(ad_id)
+        if not ad:
+            return False
+        tpl = await db.get_template(ch_id)
+        if not tpl:
+            return False
+        try:
+            filled = json.loads(ad["filled_data"] or "{}")
+        except Exception:
+            filled = {}
+        text, _kb = build_text_and_kb(
+            tpl, filled, None, ad_id=ad_id, prefix=None,
+            bot_username=None, channel_id=ch_id,
+        )
+        # Media bor bo'lsa media bilan yuboramiz
+        mtype = ad["media_type"] or ""
+        mfid = ad["media_file_id"] or ""
+        header = "💎 <b>Premium ko'rinish</b> (to'liq ma'lumot):\n\n"
+        final_text = header + text
+        if mtype == "photo" and mfid:
+            await bot.send_photo(chat_id, mfid, caption=final_text[:1024], parse_mode="HTML")
+        elif mtype == "video" and mfid:
+            await bot.send_video(chat_id, mfid, caption=final_text[:1024], parse_mode="HTML")
+        else:
+            await bot.send_message(chat_id, final_text, parse_mode="HTML", disable_web_page_preview=True)
+        return True
+    except Exception:
+        log.exception("send_full_post failed")
+        return False
+
+
 async def handle_sub_start(msg: Message, payload: str):
     """payload = sub_<ch_id>_<ad_id>"""
     bot = msg.bot
@@ -68,16 +109,19 @@ async def handle_sub_start(msg: Message, payload: str):
 
     offer_text, invite_link, private_chat_id = await _get_tpl_texts(ch_id)
 
-    # Agar user allaqachon premium (maxfiy guruh a'zosi) bo'lsa
+    # Agar user allaqachon premium (maxfiy guruh a'zosi) bo'lsa — to'liq post
     if await _is_premium_member(bot, msg.from_user.id, private_chat_id):
-        if invite_link:
-            await msg.answer(
-                f"✅ Siz allaqachon <b>{ch['name']}</b> premium obunachisiz.\n\n"
-                f"🔗 Maxfiy guruh: {invite_link}",
-                parse_mode="HTML",
-            )
-        else:
-            await msg.answer(f"✅ Siz allaqachon <b>{ch['name']}</b> premium obunachisiz.", parse_mode="HTML")
+        sent = False
+        if ad_id:
+            sent = await _send_full_post(bot, msg.chat.id, ch_id, ad_id)
+        if not sent:
+            if invite_link:
+                await msg.answer(
+                    f"✅ Siz <b>{ch['name']}</b> premium obunachisiz.\n\n🔗 Maxfiy guruh: {invite_link}",
+                    parse_mode="HTML",
+                )
+            else:
+                await msg.answer(f"✅ Siz <b>{ch['name']}</b> premium obunachisiz.", parse_mode="HTML")
         return
 
     if await _already_pending(msg.from_user.id, ch_id):

@@ -336,6 +336,7 @@ async def ch_view(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔘 Aloqa tugmasi", callback_data=f"own:btn:{ch_id}")],
         [InlineKeyboardButton(text="📝 Sold/Free matnlari", callback_data=f"own:texts:{ch_id}")],
         [InlineKeyboardButton(text="💎 Obuna sozlamalari", callback_data=f"own:sub:{ch_id}")],
+        [InlineKeyboardButton(text="🔤 Bo'sh maydon matni", callback_data=f"own:empty:{ch_id}")],
         [InlineKeyboardButton(text="📋 Default shablon (qayta o'rnatish)", callback_data=f"own:seed:{ch_id}")],
         [InlineKeyboardButton(text="♻️ Topshirildi qoidalari", callback_data=f"own:done:{ch_id}")],
         [InlineKeyboardButton(text="🎯 Aloqa/Sotildi sozlamalari", callback_data=f"own:r10:{ch_id}")],
@@ -1875,3 +1876,67 @@ async def sub_skip(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         await cb.message.answer("✅ Tugadi")
     await cb.answer("O'tkazildi")
+
+
+# ===== REJA13b: bo'sh maydon placeholder matni =====
+class EmptyPh(StatesGroup):
+    text = State()
+
+
+@router.callback_query(F.data.regexp(r"^own:empty:-?\d+$"))
+async def own_empty_open(cb: CallbackQuery, state: FSMContext):
+    try:
+        ch_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("❌", show_alert=True); return
+    ch = await db.get_channel(ch_id)
+    if not ch or ch["owner_id"] != cb.from_user.id:
+        await cb.answer("Siz bu kanal egasi emassiz", show_alert=True); return
+    # Joriy qiymatni olamiz
+    async with aiosqlite.connect(DB_PATH) as dbx:
+        dbx.row_factory = aiosqlite.Row
+        cur = await dbx.execute("SELECT empty_placeholder FROM templates WHERE channel_id=?", (ch_id,))
+        row = await cur.fetchone()
+    cur_val = (row["empty_placeholder"] if row else "") or "(o'rnatilmagan — bo'sh qoldiriladi)"
+    await state.set_state(EmptyPh.text)
+    await state.update_data(ch_id=ch_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧹 Tozalash", callback_data="own:empty:clear")],
+        [InlineKeyboardButton(text="⬅️ Bekor", callback_data=f"own:ch:{ch_id}")],
+    ])
+    await cb.message.answer(
+        "🔤 <b>Bo'sh maydon matni</b>\n\n"
+        "Post sotilganda/ochirilganda yoki admin biror maydonni bo'sh qoldirganda "
+        "shu matn {} o'rniga chiqadi (masalan: <code>Mavjud emas</code>).\n\n"
+        f"Joriy: <code>{cur_val}</code>\n\n"
+        "Yangi matnni yuboring yoki 🧹 Tozalash bosing:",
+        parse_mode="HTML", reply_markup=kb,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "own:empty:clear", StateFilter(EmptyPh.text))
+async def own_empty_clear(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    ch_id = data.get("ch_id")
+    if ch_id:
+        await _save_text_col(ch_id, "empty_placeholder", "")
+    await state.clear()
+    await cb.message.answer("✅ Bo'sh maydon matni tozalandi.")
+    await cb.answer("Tozalandi")
+
+
+@router.message(StateFilter(EmptyPh.text))
+async def own_empty_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    ch_id = data.get("ch_id")
+    if not ch_id:
+        await state.clear(); return
+    val = (msg.text or "").strip()
+    if len(val) > 200:
+        await msg.answer("❌ Juda uzun (max 200 belgi). Qaytadan yuboring:")
+        return
+    await _save_text_col(ch_id, "empty_placeholder", val)
+    await state.clear()
+    shown = val if val else "(bo'sh)"
+    await msg.answer(f"✅ Saqlandi: <code>{shown}</code>", parse_mode="HTML")

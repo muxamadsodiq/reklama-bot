@@ -12,16 +12,18 @@ def extract_placeholders(text: str) -> list[str]:
     return seen
 
 
-def fill_template(text: str, data: dict) -> str:
+def fill_template(text: str, data: dict, empty_placeholder: str = "") -> str:
     def repl(m):
         key = m.group(1)
         if key in data:
-            return str(data.get(key, ""))
-        # Agar key data'da umuman yo'q bo'lsa — bo'sh qaytarish
-        # (admin yangi maydon qo'shgan lekin text_template'da {ad_id} kabi
-        # alohida tizim placeholder'lar bor — ularni {} da qoldirmaymiz,
-        # bo'sh qilib chiqaramiz — bot crash bermaydi)
-        return ""
+            val = data.get(key, "")
+            s = str(val) if val is not None else ""
+            # REJA13b: agar qiymat bo'sh/faqat bo'sh joy bo'lsa — admin matnini chiqaramiz
+            if empty_placeholder and not s.strip():
+                return empty_placeholder
+            return s
+        # key data'da yo'q — bo'sh qaytarish (bot crash bermasin)
+        return empty_placeholder or ""
     return PLACEHOLDER_RE.sub(repl, text or "")
 
 

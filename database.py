@@ -87,6 +87,8 @@ async def init_db():
             await db.execute("ALTER TABLE templates ADD COLUMN sub_offer_text TEXT DEFAULT ''")
         if "private_invite_link" not in tcols:
             await db.execute("ALTER TABLE templates ADD COLUMN private_invite_link TEXT DEFAULT ''")
+        if "empty_placeholder" not in tcols:
+            await db.execute("ALTER TABLE templates ADD COLUMN empty_placeholder TEXT DEFAULT ''")
         # REJA13: premium_requests jadvali
         await db.execute("""
             CREATE TABLE IF NOT EXISTS premium_requests (

@@ -18,7 +18,11 @@ def build_text_and_kb(template_row, filled_data: dict, custom_url: str | None, a
     prefix = prefix or "_"
     if ad_id is not None:
         data.setdefault("ad_id", format_ad_id(ad_id, prefix))
-    text = fill_template(template_row["text_template"], data)
+    try:
+        empty_ph = (template_row["empty_placeholder"] or "").strip()
+    except (KeyError, IndexError):
+        empty_ph = ""
+    text = fill_template(template_row["text_template"], data, empty_placeholder=empty_ph)
 
     if ad_id is not None and "{ad_id}" not in (template_row["text_template"] or ""):
         text = f"{text}\n\n🆔 {format_ad_id(ad_id, prefix)}"
