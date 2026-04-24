@@ -210,24 +210,28 @@ async def _apply_sold(ad, bot: Bot) -> tuple[bool, str]:
     new_json = json.dumps(filled, ensure_ascii=False)
     await db.mark_ad_sold(ad["id"], new_json)
 
-    # Build updated public text
-    pub_tpl = _g("text_template") or ""
-    priv_tpl = _g("private_text_template") or ""
+    # Build updated public text + keyboard (tugmalar yo'qolmasligi uchun)
+    from utils.preview_builder import build_text_and_kb
+    bot_username = None
+    try:
+        me = await bot.get_me()
+        bot_username = me.username
+    except Exception:
+        pass
+
     ad_id_str = format_ad_id(ad["id"], _g("id_prefix", "_") or "_")
-    ctx = dict(filled)
-    ctx["ad_id"] = ad_id_str
 
     errors = []
 
-    async def _edit(chat_id, msg_id, new_text):
+    async def _edit(chat_id, msg_id, new_text, kb):
         if not (chat_id and msg_id):
             return
         try:
-            # Try editing caption first (if media)
             try:
                 await bot.edit_message_caption(
                     chat_id=chat_id, message_id=msg_id,
                     caption=new_text, parse_mode="HTML",
+                    reply_markup=kb,
                 )
                 return
             except Exception:
@@ -235,32 +239,39 @@ async def _apply_sold(ad, bot: Bot) -> tuple[bool, str]:
             await bot.edit_message_text(
                 chat_id=chat_id, message_id=msg_id,
                 text=new_text, parse_mode="HTML",
+                reply_markup=kb,
             )
         except Exception as e:
             errors.append(str(e))
 
-    if pub_tpl:
-        try:
-            pub_text = safe_format(pub_tpl, ctx)
-        except Exception:
-            pub_text = pub_tpl
-        try:
-            await _edit(ad["posted_chat_id"], ad["posted_message_id"], pub_text)
-        except Exception as e:
-            errors.append(f"pub: {e}")
+    # Public post — rebuild with keyboard (Obuna/Aloqa tugmalari saqlansin)
+    try:
+        pub_text, pub_kb = build_text_and_kb(
+            tpl, filled, ad["custom_url"],
+            ad_id=ad["id"],
+            bot_username=bot_username,
+            channel_id=ch_row["id"],
+        )
+        await _edit(ad["posted_chat_id"], ad["posted_message_id"], pub_text, pub_kb)
+    except Exception as e:
+        errors.append(f"pub: {e}")
 
+    # Private post — faqat matn (oddiy tugmasiz)
     try:
         priv_chat = ad["private_posted_chat_id"]
         priv_msg = ad["private_posted_message_id"]
     except (KeyError, IndexError, TypeError):
         priv_chat = priv_msg = None
 
+    priv_tpl = _g("private_text_template") or ""
     if priv_tpl and priv_chat and priv_msg:
+        ctx = dict(filled)
+        ctx["ad_id"] = ad_id_str
         try:
             priv_text = safe_format(priv_tpl, ctx)
         except Exception:
             priv_text = priv_tpl
-        await _edit(priv_chat, priv_msg, priv_text)
+        await _edit(priv_chat, priv_msg, priv_text, None)
 
     if errors:
         log.warning("sold edit errors for ad %s: %s", ad["id"], errors)
